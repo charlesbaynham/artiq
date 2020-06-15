@@ -160,7 +160,7 @@ class AD9912:
         """Returns the 48-bit frequency tuning word corresponding to the given
         frequency.
         """
-        return int64(round(self.ftw_per_hz*frequency)) & ((int64(1) << 48) - 1)
+        return int64(round(self.ftw_per_hz*frequency))
 
     @portable(flags={"fast-math"})
     def ftw_to_frequency(self, ftw):
@@ -174,7 +174,7 @@ class AD9912:
         """Returns the 16-bit phase offset word corresponding to the given
         phase.
         """
-        return int32(round((1 << 14)*phase)) & 0xffff
+        return int32(round((1 << 14)*phase))
 
     @kernel
     def set(self, frequency, phase=0.0):
