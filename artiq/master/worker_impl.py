@@ -6,6 +6,7 @@ device database, etc.) to their actual implementation in the parent master
 process via IPC.
 """
 
+import pickle
 import sys
 import time
 import os
@@ -37,13 +38,23 @@ ipc = None
 
 
 def get_object():
-    line = ipc.readline().decode()
-    return pyon.decode(line)
+    line = ipc.readline()
+    data_size = int(line.decode())
+    
+    data = b''
+    while len(data) < data_size:
+        data += ipc.read(data_size - len(data))
+
+    return pickle.loads(data)
 
 
 def put_object(obj):
-    ds = pyon.encode(obj)
-    ipc.write((ds + "\n").encode())
+    # ds = pyon.encode(obj)
+    
+    data = pickle.dumps(obj)
+    size_str = (str(len(data)) + '\n').encode()
+    ipc.write(size_str)
+    ipc.write(data)
 
 
 def make_parent_action(action):

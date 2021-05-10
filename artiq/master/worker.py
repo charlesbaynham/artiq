@@ -2,6 +2,7 @@ import sys
 import os
 import asyncio
 import logging
+import pickle
 import subprocess
 import time
 
@@ -157,8 +158,16 @@ class Worker:
 
     async def _send(self, obj, cancellable=True):
         assert self.io_lock.locked()
-        line = pyon.encode(obj)
-        self.ipc.write((line + "\n").encode())
+
+        data = pickle.dumps(obj)
+        size_str = (str(len(data)) + "\n").encode()
+
+        # Write the size of the data, delimited by \n. Then, write the data
+        # itself. This might contain \n chars, but the receiving reader knows
+        # how many bytes it's expecting so it doesn't need delimiters
+        self.ipc.write(size_str)
+        self.ipc.write(data)
+
         ifs = [self.ipc.drain()]
         if cancellable:
             ifs.append(self.closed.wait())
@@ -193,11 +202,25 @@ class Worker:
             raise WorkerError(
                 "Worker ended while attempting to receive data (RID {})".
                 format(self.rid))
+
         try:
-            obj = pyon.decode(line.decode())
+            data_size = int(line.decode())
+        except Exception as e:
+            raise WorkerError(
+                "Worker sent invalid data_size (RID {}): %s".format(self.rid, line)
+            ) from e
+
+        data = b""
+        while len(data) < data_size:
+            data += await self.ipc.read(data_size - len(data))
+
+        try:
+            obj = pickle.loads(data)
         except:
-            raise WorkerError("Worker sent invalid PYON data (RID {})".format(
-                self.rid))
+            raise WorkerError(
+                "Worker sent invalid picked data (RID {})".format(self.rid)
+            )
+
         return obj
 
     async def _handle_worker_requests(self):
