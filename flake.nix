@@ -241,7 +241,7 @@
         name = "vivado";
         targetPkgs = vivadoDeps;
         profile = "source /opt/Xilinx/Vivado/2021.1/settings64.sh";
-        runScript = "vivado";
+        runScript = "vivado_lab";
       };
 
       makeArtiqBoardPackage = { target, variant, buildCommand ? "python -m artiq.gateware.targets.${target} -V ${variant}" }:
