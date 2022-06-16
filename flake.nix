@@ -362,7 +362,7 @@
       };
     in rec {
       packages.x86_64-linux = {
-        inherit pythonparser qasync openocd-bscanspi artiq;
+        inherit pythonparser qasync openocd-bscanspi artiq llvmlite-new;
         inherit migen misoc asyncserial microscope vivadoEnv vivado;
         artiq-board-kc705-nist_clock = makeArtiqBoardPackage {
           target = "kc705";
