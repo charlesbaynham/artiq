@@ -1,7 +1,7 @@
 {
   description = "A leading-edge control system for quantum information experiments";
 
-  inputs.nixpkgs.url = github:NixOS/nixpkgs/nixos-21.11;
+  inputs.nixpkgs.url = github:NixOS/nixpkgs/nixos-22.05;
   inputs.mozilla-overlay = { url = github:mozilla/nixpkgs-mozilla; flake = false; };
   inputs.sipyco.url = github:m-labs/sipyco;
   inputs.sipyco.inputs.nixpkgs.follows = "nixpkgs";
@@ -16,8 +16,9 @@
   outputs = { self, nixpkgs, mozilla-overlay, sipyco, src-pythonparser, artiq-comtools, src-migen, src-misoc }:
     let
       pkgs = import nixpkgs { system = "x86_64-linux"; overlays = [ (import mozilla-overlay) ]; };
+      pkgs-aarch64 = import nixpkgs { system = "aarch64-linux"; };
 
-      artiqVersionMajor = 7;
+      artiqVersionMajor = 8;
       artiqVersionMinor = self.sourceInfo.revCount or 0;
       artiqVersionId = self.sourceInfo.shortRev or "unknown";
       artiqVersion = (builtins.toString artiqVersionMajor) + "." + (builtins.toString artiqVersionMinor) + "." + artiqVersionId + ".beta";
@@ -305,7 +306,7 @@
           dontFixup = true;
         };
 
-      openocd-bscanspi = let
+      openocd-bscanspi-f = pkgs: let
         bscan_spi_bitstreams-pkg = pkgs.stdenv.mkDerivation {
           name = "bscan_spi_bitstreams";
           src = pkgs.fetchFromGitHub {
@@ -331,7 +332,7 @@
             sha256 = "sha256-YgUsl4/FohfsOncM4uiz/3c6g2ZN4oZ0y5vV/2Skwqg=";
             fetchSubmodules = true;
           };
-          patches = oa.patches or [] ++ [
+          patches = [
             (pkgs.fetchurl {
               url = "https://git.m-labs.hk/M-Labs/nix-scripts/raw/commit/575ef05cd554c239e4cc8cb97ae4611db458a80d/artiq-fast/pkgs/openocd-jtagspi.diff";
               sha256 = "0g3crk8gby42gm661yxdcgapdi8sp050l5pb2d0yjfic7ns9cw81";
@@ -352,7 +353,7 @@
           sha256 = "sha256-ukZd3ajt0Sx3LByof4R80S31F5t1yo+L8QUADrMMm2A=";
         };
         buildInputs = [ pkgs.python3Packages.setuptools_scm ];
-        propagatedBuildInputs = [ pkgs.nodejs pkgs.nodePackages.wavedrom-cli ] ++ (with pkgs.python3Packages; [ wavedrom sphinx xcffib cairosvg ]);
+        propagatedBuildInputs = (with pkgs.python3Packages; [ wavedrom sphinx xcffib cairosvg ]);
       };
       latex-artiq-manual = pkgs.texlive.combine {
         inherit (pkgs.texlive)
@@ -362,8 +363,9 @@
       };
     in rec {
       packages.x86_64-linux = {
-        inherit pythonparser qasync openocd-bscanspi artiq llvmlite-new;
+        inherit pythonparser qasync artiq llvmlite-new;
         inherit migen misoc asyncserial microscope vivadoEnv vivado;
+        openocd-bscanspi = openocd-bscanspi-f pkgs;
         artiq-board-kc705-nist_clock = makeArtiqBoardPackage {
           target = "kc705";
           variant = "nist_clock";
@@ -443,13 +445,18 @@
         '';
       };
 
+      packages.aarch64-linux = {
+        openocd-bscanspi = openocd-bscanspi-f pkgs-aarch64;
+      };
+
       hydraJobs = {
         inherit (packages.x86_64-linux) artiq artiq-board-kc705-nist_clock openocd-bscanspi;
         kc705-hitl = pkgs.stdenv.mkDerivation {
           name = "kc705-hitl";
 
-          # requires patched Nix
-          __networked = true;
+          __networked = true;  # compatibility with old patched Nix
+          # breaks hydra, https://github.com/NixOS/hydra/issues/1216
+          #__impure = true;     # Nix 2.8+
 
           buildInputs = [
             (pkgs.python3.withPackages(ps: with packages.x86_64-linux; [ artiq ps.paramiko ]))
@@ -466,7 +473,7 @@
             mkdir $HOME/.ssh
             cp /opt/hydra_id_ed25519 $HOME/.ssh/id_ed25519
             cp /opt/hydra_id_ed25519.pub $HOME/.ssh/id_ed25519.pub
-            echo "rpi-1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPOBQVcsvk6WgRj18v4m0zkFeKrcN9gA+r6sxQxNwFpv" > $HOME/.ssh/known_hosts
+            echo "rpi-1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIACtBFDVBYoAE4fpJCTANZSE0bcVpTR3uvfNvb80C4i5" > $HOME/.ssh/known_hosts
             chmod 600 $HOME/.ssh/id_ed25519
             LOCKCTL=$(mktemp -d)
             mkfifo $LOCKCTL/lockctl
