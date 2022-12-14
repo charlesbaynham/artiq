@@ -3,13 +3,19 @@
 Release notes
 =============
 
-Unreleased
-----------
+ARTIQ-8 (Unreleased)
+--------------------
 
 Highlights:
 
 * Implemented Phaser-servo. This requires recent gateware on Phaser.
-
+* Implemented Phaser-MIQRO support. This requires the Phaser MIQRO gateware
+  variant.
+* MSYS2 packaging for Windows.
+* Sampler: adjusted ADC MU to Volt conversion base for Sampler since v2.2.
+  For earlier version please explicitly define it as an argument in the device database file
+  (e.g. ``"hw_rev": "v2.1"``).
+* Added channel names to RTIO errors.
 
 ARTIQ-7
 -------
