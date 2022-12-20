@@ -31,7 +31,7 @@ Highlights:
    - Almazny mezzanine board for Mirny
    - Phaser: improved documentation, exposed the DAC coarse mixer and ``sif_sync``, exposed upconverter calibration
      and enabling/disabling of upconverter LO & RF outputs, added helpers to align Phaser updates to the
-     RTIO timeline (``get_next_frame_mu()``
+     RTIO timeline (``get_next_frame_mu()``).
    - Urukul: ``get()``, ``get_mu()``, ``get_att()``, and ``get_att_mu()`` functions added for AD9910 and AD9912.
 * Softcore targets now use the RISC-V architecture (VexRiscv) instead of OR1K (mor1kx).
 * Gateware FPU is supported on KC705 and Kasli 2.0.
@@ -81,9 +81,9 @@ Breaking changes:
   generated for some configurations.
 * Phaser: fixed coarse mixer frequency configuration
 * Mirny: Added extra delays in ``ADF5356.sync()``. This avoids the need of an extra delay before
-  calling `ADF5356.init()`.
+  calling ``ADF5356.init()``.
 * The deprecated ``set_dataset(..., save=...)`` is no longer supported.
-* The ``PCA9548`` I2C switch class was renamed to ``I2CSwitch``, to accomodate support for PCA9547,
+* The ``PCA9548`` I2C switch class was renamed to ``I2CSwitch``, to accommodate support for PCA9547,
   and possibly other switches in future. Readback has been removed, and now only one channel per
   switch is supported.
 

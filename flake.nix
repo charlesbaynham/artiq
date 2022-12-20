@@ -29,13 +29,13 @@
         sha256 = "sha256-EZKgw89AH4vxaJpUHmIMzMW/80wAFQlfcxRoBD9nz0c=";
       };
 
-      targets = [];
+      targets = [ ];
       rustChannelOfTargets = _channel: _date: targets:
         (pkgs.lib.rustLib.fromManifestFile rustManifest {
           inherit (pkgs) stdenv lib fetchurl patchelf;
         }).rust.override {
           inherit targets;
-          extensions = ["rust-src"];
+          extensions = [ "rust-src" ];
         };
       rust = rustChannelOfTargets "nightly" null targets;
       rustPlatform = pkgs.recurseIntoAttrs (pkgs.makeRustPlatform {
@@ -120,8 +120,8 @@
 
         preBuild =
           ''
-          export VERSIONEER_OVERRIDE=${version}
-          export VERSIONEER_REV=${artiqRev}
+            export VERSIONEER_OVERRIDE=${version}
+            export VERSIONEER_REV=${artiqRev}
           '';
 
         nativeBuildInputs = [ pkgs.qt5.wrapQtAppsHook ];
@@ -151,12 +151,12 @@
           TESTDIR=`mktemp -d`
           cp --no-preserve=mode,ownership -R $src/artiq/test/lit $TESTDIR
           LIBARTIQ_SUPPORT=`libartiq-support` lit -v $TESTDIR/lit
-          '';
+        '';
       };
 
       artiq = artiq-upstream // {
-        withExperimentalFeatures = features: artiq-upstream.overrideAttrs(oa:
-            { patches = map (f: ./experimental-features/${f}.diff) features; });
+        withExperimentalFeatures = features: artiq-upstream.overrideAttrs (oa:
+          { patches = map (f: ./experimental-features/${f}.diff) features; });
       };
 
       migen = pkgs.python3Packages.buildPythonPackage rec {
@@ -233,7 +233,7 @@
         runScript = "vivado";
       };
 
-      makeArtiqBoardPackage = { target, variant, buildCommand ? "python -m artiq.gateware.targets.${target} -V ${variant}", experimentalFeatures ? [] }:
+      makeArtiqBoardPackage = { target, variant, buildCommand ? "python -m artiq.gateware.targets.${target} -V ${variant}", experimentalFeatures ? [ ] }:
         pkgs.stdenv.mkDerivation {
           name = "artiq-board-${target}-${variant}";
           phases = [ "buildPhase" "checkPhase" "installPhase" ];
@@ -244,7 +244,7 @@
             };
           };
           nativeBuildInputs = [
-            (pkgs.python3.withPackages(ps: [ ps.jsonschema migen misoc (artiq.withExperimentalFeatures experimentalFeatures) ]))
+            (pkgs.python3.withPackages (ps: [ ps.jsonschema migen misoc (artiq.withExperimentalFeatures experimentalFeatures) ]))
             rustPlatform.rust.rustc
             rustPlatform.rust.cargo
             pkgs.llvmPackages_11.clang-unwrapped
@@ -254,79 +254,81 @@
             rustPlatform.cargoSetupHook
             cargo-xbuild
           ];
-          buildPhase = 
+          buildPhase =
             ''
-            ARTIQ_PATH=`python -c "import artiq; print(artiq.__path__[0])"`
-            ln -s $ARTIQ_PATH/firmware/Cargo.lock .
-            cargoSetupPostUnpackHook
-            cargoSetupPostPatchHook
-            ${buildCommand}
+              ARTIQ_PATH=`python -c "import artiq; print(artiq.__path__[0])"`
+              ln -s $ARTIQ_PATH/firmware/Cargo.lock .
+              cargoSetupPostUnpackHook
+              cargoSetupPostPatchHook
+              ${buildCommand}
             '';
           doCheck = true;
           checkPhase =
             ''
-            # Search for PCREs in the Vivado output to check for errors
-            check_log() {
-              grep -Pe "$1" artiq_${target}/${variant}/gateware/vivado.log && exit 1 || true
-            }
-            check_log "\d+ constraint not met\."
-            check_log "Timing constraints are not met\."
+              # Search for PCREs in the Vivado output to check for errors
+              check_log() {
+                grep -Pe "$1" artiq_${target}/${variant}/gateware/vivado.log && exit 1 || true
+              }
+              check_log "\d+ constraint not met\."
+              check_log "Timing constraints are not met\."
             '';
           installPhase =
             ''
-            TARGET_DIR=$out
-            mkdir -p $TARGET_DIR
-            cp artiq_${target}/${variant}/gateware/top.bit $TARGET_DIR
-            if [ -e artiq_${target}/${variant}/software/bootloader/bootloader.bin ]
-            then cp artiq_${target}/${variant}/software/bootloader/bootloader.bin $TARGET_DIR
-            fi
-            if [ -e artiq_${target}/${variant}/software/runtime ]
-            then cp artiq_${target}/${variant}/software/runtime/runtime.{elf,fbi} $TARGET_DIR
-            else cp artiq_${target}/${variant}/software/satman/satman.{elf,fbi} $TARGET_DIR
-            fi
+              TARGET_DIR=$out
+              mkdir -p $TARGET_DIR
+              cp artiq_${target}/${variant}/gateware/top.bit $TARGET_DIR
+              if [ -e artiq_${target}/${variant}/software/bootloader/bootloader.bin ]
+              then cp artiq_${target}/${variant}/software/bootloader/bootloader.bin $TARGET_DIR
+              fi
+              if [ -e artiq_${target}/${variant}/software/runtime ]
+              then cp artiq_${target}/${variant}/software/runtime/runtime.{elf,fbi} $TARGET_DIR
+              else cp artiq_${target}/${variant}/software/satman/satman.{elf,fbi} $TARGET_DIR
+              fi
             '';
           # don't mangle ELF files as they are not for NixOS
           dontFixup = true;
         };
 
-      openocd-bscanspi-f = pkgs: let
-        bscan_spi_bitstreams-pkg = pkgs.stdenv.mkDerivation {
-          name = "bscan_spi_bitstreams";
-          src = pkgs.fetchFromGitHub {
-            owner = "quartiq";
-            repo = "bscan_spi_bitstreams";
-            rev = "01d8f819f15baf9a8cc5d96945a51e4d267ff564";
-            sha256 = "1zqv47kzgvbn4c8cr019a6wcja7gn5h1z4kvw5bhpc72fyhagal9";
+      openocd-bscanspi-f = pkgs:
+        let
+          bscan_spi_bitstreams-pkg = pkgs.stdenv.mkDerivation {
+            name = "bscan_spi_bitstreams";
+            src = pkgs.fetchFromGitHub {
+              owner = "quartiq";
+              repo = "bscan_spi_bitstreams";
+              rev = "01d8f819f15baf9a8cc5d96945a51e4d267ff564";
+              sha256 = "1zqv47kzgvbn4c8cr019a6wcja7gn5h1z4kvw5bhpc72fyhagal9";
+            };
+            phases = [ "installPhase" ];
+            installPhase =
+              ''
+                mkdir -p $out/share/bscan-spi-bitstreams
+                cp $src/*.bit $out/share/bscan-spi-bitstreams
+              '';
           };
-          phases = ["installPhase"];
-          installPhase =
-          ''
-          mkdir -p $out/share/bscan-spi-bitstreams
-          cp $src/*.bit $out/share/bscan-spi-bitstreams
-          '';
+          # https://docs.lambdaconcept.com/screamer/troubleshooting.html#error-contents-differ
+          openocd-fixed = pkgs.openocd.overrideAttrs (oa: {
+            version = "unstable-2021-09-15";
+            src = pkgs.fetchFromGitHub {
+              owner = "openocd-org";
+              repo = "openocd";
+              rev = "a0bd3c9924870c3b8f428648410181040dabc33c";
+              sha256 = "sha256-YgUsl4/FohfsOncM4uiz/3c6g2ZN4oZ0y5vV/2Skwqg=";
+              fetchSubmodules = true;
+            };
+            patches = [
+              (pkgs.fetchurl {
+                url = "https://git.m-labs.hk/M-Labs/nix-scripts/raw/commit/575ef05cd554c239e4cc8cb97ae4611db458a80d/artiq-fast/pkgs/openocd-jtagspi.diff";
+                sha256 = "0g3crk8gby42gm661yxdcgapdi8sp050l5pb2d0yjfic7ns9cw81";
+              })
+            ];
+            nativeBuildInputs = oa.nativeBuildInputs or [ ] ++ [ pkgs.autoreconfHook269 ];
+          });
+        in
+        pkgs.buildEnv {
+          name = "openocd-bscanspi";
+          paths = [ openocd-fixed bscan_spi_bitstreams-pkg ];
         };
-        # https://docs.lambdaconcept.com/screamer/troubleshooting.html#error-contents-differ
-        openocd-fixed = pkgs.openocd.overrideAttrs(oa: {
-          version = "unstable-2021-09-15";
-          src = pkgs.fetchFromGitHub {
-            owner = "openocd-org";
-            repo = "openocd";
-            rev = "a0bd3c9924870c3b8f428648410181040dabc33c";
-            sha256 = "sha256-YgUsl4/FohfsOncM4uiz/3c6g2ZN4oZ0y5vV/2Skwqg=";
-            fetchSubmodules = true;
-          };
-          patches = [
-            (pkgs.fetchurl {
-              url = "https://git.m-labs.hk/M-Labs/nix-scripts/raw/commit/575ef05cd554c239e4cc8cb97ae4611db458a80d/artiq-fast/pkgs/openocd-jtagspi.diff";
-              sha256 = "0g3crk8gby42gm661yxdcgapdi8sp050l5pb2d0yjfic7ns9cw81";
-            })
-          ];
-          nativeBuildInputs = oa.nativeBuildInputs or [] ++ [ pkgs.autoreconfHook269 ];
-        });
-      in pkgs.buildEnv {
-        name = "openocd-bscanspi";
-        paths = [ openocd-fixed bscan_spi_bitstreams-pkg ];
-      };
 
       sphinxcontrib-wavedrom = pkgs.python3Packages.buildPythonPackage rec {
         pname = "sphinxcontrib-wavedrom";
@@ -344,7 +346,8 @@
           titlesec tabulary varwidth framed fancyvrb float wrapfig parskip
           upquote capt-of needspace etoolbox;
       };
-    in rec {
+    in
+    rec {
       packages.x86_64-linux = {
         inherit pythonparser qasync artiq;
         inherit migen misoc asyncserial microscope vivadoEnv vivado;
@@ -359,8 +362,10 @@
           version = artiqVersion;
           src = self;
           buildInputs = [
-            pkgs.python3Packages.sphinx pkgs.python3Packages.sphinx_rtd_theme
-            pkgs.python3Packages.sphinx-argparse sphinxcontrib-wavedrom
+            pkgs.python3Packages.sphinx
+            pkgs.python3Packages.sphinx_rtd_theme
+            pkgs.python3Packages.sphinx-argparse
+            sphinxcontrib-wavedrom
           ];
           buildPhase = ''
             export VERSIONEER_OVERRIDE=${artiqVersion}
@@ -379,8 +384,10 @@
           version = artiqVersion;
           src = self;
           buildInputs = [
-            pkgs.python3Packages.sphinx pkgs.python3Packages.sphinx_rtd_theme
-            pkgs.python3Packages.sphinx-argparse sphinxcontrib-wavedrom
+            pkgs.python3Packages.sphinx
+            pkgs.python3Packages.sphinx_rtd_theme
+            pkgs.python3Packages.sphinx-argparse
+            sphinxcontrib-wavedrom
             latex-artiq-manual
           ];
           buildPhase = ''
@@ -400,12 +407,12 @@
 
       inherit makeArtiqBoardPackage;
 
-      defaultPackage.x86_64-linux = pkgs.python3.withPackages(ps: [ packages.x86_64-linux.artiq ]);
+      defaultPackage.x86_64-linux = pkgs.python3.withPackages (ps: [ packages.x86_64-linux.artiq ]);
 
       devShell.x86_64-linux = pkgs.mkShell {
         name = "artiq-dev-shell";
         buildInputs = [
-          (pkgs.python3.withPackages(ps: with packages.x86_64-linux; [ migen misoc jesd204b artiq ps.paramiko ps.jsonschema microscope ]))
+          (pkgs.python3.withPackages (ps: with packages.x86_64-linux; [ migen misoc jesd204b artiq ps.paramiko ps.jsonschema microscope ]))
           rustPlatform.rust.rustc
           rustPlatform.rust.cargo
           cargo-xbuild
@@ -420,13 +427,16 @@
           packages.x86_64-linux.vivadoEnv
           packages.x86_64-linux.vivado
           packages.x86_64-linux.openocd-bscanspi
-          pkgs.python3Packages.sphinx pkgs.python3Packages.sphinx_rtd_theme
-          pkgs.python3Packages.sphinx-argparse sphinxcontrib-wavedrom latex-artiq-manual
+          pkgs.python3Packages.sphinx
+          pkgs.python3Packages.sphinx_rtd_theme
+          pkgs.python3Packages.sphinx-argparse
+          sphinxcontrib-wavedrom
+          latex-artiq-manual
         ];
         shellHook = ''
-          export LIBARTIQ_SUPPORT=`libartiq-support`
-	  export QT_PLUGIN_PATH=${pkgs.qt5.qtbase}/${pkgs.qt5.qtbase.dev.qtPluginPrefix}
-          export QML2_IMPORT_PATH=${pkgs.qt5.qtbase}/${pkgs.qt5.qtbase.dev.qtQmlPrefix}
+                export LIBARTIQ_SUPPORT=`libartiq-support`
+          export QT_PLUGIN_PATH=${pkgs.qt5.qtbase}/${pkgs.qt5.qtbase.dev.qtPluginPrefix}
+                export QML2_IMPORT_PATH=${pkgs.qt5.qtbase}/${pkgs.qt5.qtbase.dev.qtQmlPrefix}
         '';
       };
 
@@ -439,54 +449,54 @@
         kc705-hitl = pkgs.stdenv.mkDerivation {
           name = "kc705-hitl";
 
-          __networked = true;  # compatibility with old patched Nix
+          __networked = true; # compatibility with old patched Nix
           # breaks hydra, https://github.com/NixOS/hydra/issues/1216
           #__impure = true;     # Nix 2.8+
 
           buildInputs = [
-            (pkgs.python3.withPackages(ps: with packages.x86_64-linux; [ artiq ps.paramiko ]))
+            (pkgs.python3.withPackages (ps: with packages.x86_64-linux; [ artiq ps.paramiko ]))
             pkgs.llvm_11
             pkgs.lld_11
             pkgs.openssh
-            packages.x86_64-linux.openocd-bscanspi  # for the bscanspi bitstreams
+            packages.x86_64-linux.openocd-bscanspi # for the bscanspi bitstreams
           ];
           phases = [ "buildPhase" ];
           buildPhase =
             ''
-            whoami
-            export HOME=`mktemp -d`
-            mkdir $HOME/.ssh
-            cp /opt/hydra_id_ed25519 $HOME/.ssh/id_ed25519
-            cp /opt/hydra_id_ed25519.pub $HOME/.ssh/id_ed25519.pub
-            echo "rpi-1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIACtBFDVBYoAE4fpJCTANZSE0bcVpTR3uvfNvb80C4i5" > $HOME/.ssh/known_hosts
-            chmod 600 $HOME/.ssh/id_ed25519
-            LOCKCTL=$(mktemp -d)
-            mkfifo $LOCKCTL/lockctl
+              whoami
+              export HOME=`mktemp -d`
+              mkdir $HOME/.ssh
+              cp /opt/hydra_id_ed25519 $HOME/.ssh/id_ed25519
+              cp /opt/hydra_id_ed25519.pub $HOME/.ssh/id_ed25519.pub
+              echo "rpi-1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIACtBFDVBYoAE4fpJCTANZSE0bcVpTR3uvfNvb80C4i5" > $HOME/.ssh/known_hosts
+              chmod 600 $HOME/.ssh/id_ed25519
+              LOCKCTL=$(mktemp -d)
+              mkfifo $LOCKCTL/lockctl
 
-            cat $LOCKCTL/lockctl | ${pkgs.openssh}/bin/ssh \
-              -i $HOME/.ssh/id_ed25519 \
-              -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
-              rpi-1 \
-              'mkdir -p /tmp/board_lock && flock /tmp/board_lock/kc705-1 -c "echo Ok; cat"' \
-            | (
-              # End remote flock via FIFO
-              atexit_unlock() {
-                echo > $LOCKCTL/lockctl
-              }
-              trap atexit_unlock EXIT
+              cat $LOCKCTL/lockctl | ${pkgs.openssh}/bin/ssh \
+                -i $HOME/.ssh/id_ed25519 \
+                -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
+                rpi-1 \
+                'mkdir -p /tmp/board_lock && flock /tmp/board_lock/kc705-1 -c "echo Ok; cat"' \
+              | (
+                # End remote flock via FIFO
+                atexit_unlock() {
+                  echo > $LOCKCTL/lockctl
+                }
+                trap atexit_unlock EXIT
 
-              # Read "Ok" line when remote successfully locked
-              read LOCK_OK
+                # Read "Ok" line when remote successfully locked
+                read LOCK_OK
 
-              artiq_flash -t kc705 -H rpi-1 -d ${packages.x86_64-linux.artiq-board-kc705-nist_clock}
-              sleep 15
+                artiq_flash -t kc705 -H rpi-1 -d ${packages.x86_64-linux.artiq-board-kc705-nist_clock}
+                sleep 15
 
-              export ARTIQ_ROOT=`python -c "import artiq; print(artiq.__path__[0])"`/examples/kc705_nist_clock
-              export ARTIQ_LOW_LATENCY=1
-              python -m unittest discover -v artiq.test.coredevice
-            )
+                export ARTIQ_ROOT=`python -c "import artiq; print(artiq.__path__[0])"`/examples/kc705_nist_clock
+                export ARTIQ_LOW_LATENCY=1
+                python -m unittest discover -v artiq.test.coredevice
+              )
 
-            touch $out
+              touch $out
             '';
         };
         inherit (packages.x86_64-linux) artiq-manual-html artiq-manual-pdf;
