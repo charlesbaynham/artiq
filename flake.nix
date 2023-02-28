@@ -183,18 +183,6 @@
         propagatedBuildInputs = with pkgs.python3Packages; [ jinja2 numpy migen pyserial asyncserial ];
       };
 
-      jesd204b = pkgs.python3Packages.buildPythonPackage rec {
-        pname = "jesd204b";
-        version = "unstable-2021-05-05";
-        src = pkgs.fetchFromGitHub {
-          owner = "m-labs";
-          repo = "jesd204b";
-          rev = "bf1cd9014c8b7a9db67609f653634daaf3bcd39b";
-          sha256 = "sha256-wyYOCRIPANReeCl+KaIpiAStsn2mzfMlK+cSrUzVrAw=";
-        };
-        propagatedBuildInputs = with pkgs.python3Packages; [ migen misoc ];
-      };
-
       microscope = pkgs.python3Packages.buildPythonPackage rec {
         pname = "microscope";
         version = "unstable-2020-12-28";
@@ -205,20 +193,6 @@
           sha256 = "sha256-jzyiLRuEf7p8LdhmZvOQj/dyQx8eUE8p6uRlwoiT8vg=";
         };
         propagatedBuildInputs = with pkgs.python3Packages; [ pyserial prettytable msgpack migen ];
-      };
-
-      cargo-xbuild = rustPlatform.buildRustPackage rec {
-        pname = "cargo-xbuild";
-        version = "0.6.5";
-
-        src = pkgs.fetchFromGitHub {
-          owner = "rust-osdev";
-          repo = pname;
-          rev = "v${version}";
-          sha256 = "18djvygq9v8rmfchvi2hfj0i6fhn36m716vqndqnj56fiqviwxvf";
-        };
-
-        cargoSha256 = "13sj9j9kl6js75h9xq0yidxy63vixxm9q3f8jil6ymarml5wkhx8";
       };
 
       vivadoEnv = pkgs.buildFHSUserEnv {
@@ -247,12 +221,12 @@
             (pkgs.python3.withPackages (ps: [ ps.jsonschema migen misoc (artiq.withExperimentalFeatures experimentalFeatures) ]))
             rustPlatform.rust.rustc
             rustPlatform.rust.cargo
+            pkgs.cargo-xbuild
             pkgs.llvmPackages_11.clang-unwrapped
             pkgs.llvm_11
             pkgs.lld_11
             vivado
             rustPlatform.cargoSetupHook
-            cargo-xbuild
           ];
           buildPhase =
             ''
@@ -412,10 +386,10 @@
       devShell.x86_64-linux = pkgs.mkShell {
         name = "artiq-dev-shell";
         buildInputs = [
-          (pkgs.python3.withPackages (ps: with packages.x86_64-linux; [ migen misoc jesd204b artiq ps.paramiko ps.jsonschema microscope ]))
+          (pkgs.python3.withPackages(ps: with packages.x86_64-linux; [ migen misoc artiq ps.paramiko ps.jsonschema microscope ]))
           rustPlatform.rust.rustc
           rustPlatform.rust.cargo
-          cargo-xbuild
+          pkgs.cargo-xbuild
           pkgs.llvmPackages_11.clang-unwrapped
           pkgs.llvm_11
           pkgs.lld_11
@@ -446,7 +420,19 @@
 
       hydraJobs = {
         inherit (packages.x86_64-linux) artiq artiq-board-kc705-nist_clock openocd-bscanspi;
-        kc705-hitl = pkgs.stdenv.mkDerivation {
+        gateware-sim = pkgs.stdenvNoCC.mkDerivation {
+          name = "gateware-sim";
+          buildInputs = [
+            (pkgs.python3.withPackages(ps: with packages.x86_64-linux; [ migen misoc artiq ]))
+          ];
+          phases = [ "buildPhase" ];
+          buildPhase =
+            ''
+            python -m unittest discover -v artiq.gateware.test
+            touch $out
+            '';
+        };
+        kc705-hitl = pkgs.stdenvNoCC.mkDerivation {
           name = "kc705-hitl";
 
           __networked = true; # compatibility with old patched Nix
@@ -463,15 +449,14 @@
           phases = [ "buildPhase" ];
           buildPhase =
             ''
-              whoami
-              export HOME=`mktemp -d`
-              mkdir $HOME/.ssh
-              cp /opt/hydra_id_ed25519 $HOME/.ssh/id_ed25519
-              cp /opt/hydra_id_ed25519.pub $HOME/.ssh/id_ed25519.pub
-              echo "rpi-1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIACtBFDVBYoAE4fpJCTANZSE0bcVpTR3uvfNvb80C4i5" > $HOME/.ssh/known_hosts
-              chmod 600 $HOME/.ssh/id_ed25519
-              LOCKCTL=$(mktemp -d)
-              mkfifo $LOCKCTL/lockctl
+            export HOME=`mktemp -d`
+            mkdir $HOME/.ssh
+            cp /opt/hydra_id_ed25519 $HOME/.ssh/id_ed25519
+            cp /opt/hydra_id_ed25519.pub $HOME/.ssh/id_ed25519.pub
+            echo "rpi-1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIACtBFDVBYoAE4fpJCTANZSE0bcVpTR3uvfNvb80C4i5" > $HOME/.ssh/known_hosts
+            chmod 600 $HOME/.ssh/id_ed25519
+            LOCKCTL=$(mktemp -d)
+            mkfifo $LOCKCTL/lockctl
 
               cat $LOCKCTL/lockctl | ${pkgs.openssh}/bin/ssh \
                 -i $HOME/.ssh/id_ed25519 \
