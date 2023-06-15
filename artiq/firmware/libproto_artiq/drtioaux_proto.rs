@@ -14,6 +14,9 @@ impl<T> From<IoError<T>> for Error<T> {
     }
 }
 
+pub const DMA_TRACE_MAX_SIZE: usize = /*max size*/512 - /*CRC*/4 - /*packet ID*/1 - /*trace ID*/4 - /*last*/1 -/*length*/2;
+pub const ANALYZER_MAX_SIZE: usize  = /*max size*/512 - /*CRC*/4 - /*packet ID*/1 - /*last*/1 - /*length*/2;
+
 #[derive(PartialEq, Debug)]
 pub enum Packet {
     EchoRequest,
@@ -55,8 +58,18 @@ pub enum Packet {
     SpiReadReply { succeeded: bool, data: u32 },
     SpiBasicReply { succeeded: bool },
 
-    JdacBasicRequest { destination: u8, dacno: u8, reqno: u8, param: u8 },
-    JdacBasicReply { succeeded: bool, retval: u8 },
+    AnalyzerHeaderRequest { destination: u8 },
+    AnalyzerHeader { sent_bytes: u32, total_byte_count: u64, overflow_occurred: bool },
+    AnalyzerDataRequest { destination: u8 },
+    AnalyzerData { last: bool, length: u16, data: [u8; ANALYZER_MAX_SIZE]},
+
+    DmaAddTraceRequest { destination: u8, id: u32, last: bool, length: u16, trace: [u8; DMA_TRACE_MAX_SIZE] },
+    DmaAddTraceReply { succeeded: bool },
+    DmaRemoveTraceRequest { destination: u8, id: u32 },
+    DmaRemoveTraceReply { succeeded: bool },
+    DmaPlaybackRequest { destination: u8, id: u32, timestamp: u64 },
+    DmaPlaybackReply { succeeded: bool },
+    DmaPlaybackStatus { destination: u8, id: u32, error: u8, channel: u32, timestamp: u64 }
 }
 
 impl Packet {
@@ -188,15 +201,68 @@ impl Packet {
                 succeeded: reader.read_bool()?
             },
 
-            0xa0 => Packet::JdacBasicRequest {
-                destination: reader.read_u8()?,
-                dacno: reader.read_u8()?,
-                reqno: reader.read_u8()?,
-                param: reader.read_u8()?,
+            0xa0 => Packet::AnalyzerHeaderRequest {
+                destination: reader.read_u8()?
             },
-            0xa1 => Packet::JdacBasicReply {
-                succeeded: reader.read_bool()?,
-                retval: reader.read_u8()?
+            0xa1 => Packet::AnalyzerHeader {
+                sent_bytes: reader.read_u32()?, 
+                total_byte_count: reader.read_u64()?, 
+                overflow_occurred: reader.read_bool()?,
+            },
+            0xa2 => Packet::AnalyzerDataRequest {
+                destination: reader.read_u8()?
+            },
+            0xa3 => {
+                let last = reader.read_bool()?;
+                let length = reader.read_u16()?;
+                let mut data: [u8; ANALYZER_MAX_SIZE] = [0; ANALYZER_MAX_SIZE];
+                reader.read_exact(&mut data[0..length as usize])?;
+                Packet::AnalyzerData {
+                    last: last,
+                    length: length,
+                    data: data
+                }
+            },
+
+            0xb0 => { 
+                let destination = reader.read_u8()?;
+                let id = reader.read_u32()?;
+                let last = reader.read_bool()?;
+                let length = reader.read_u16()?;
+                let mut trace: [u8; DMA_TRACE_MAX_SIZE] = [0; DMA_TRACE_MAX_SIZE];
+                reader.read_exact(&mut trace[0..length as usize])?;
+                Packet::DmaAddTraceRequest {
+                    destination: destination,
+                    id: id,
+                    last: last,
+                    length: length as u16,
+                    trace: trace,
+                }
+            },
+            0xb1 => Packet::DmaAddTraceReply {
+                succeeded: reader.read_bool()?
+            },
+            0xb2 => Packet::DmaRemoveTraceRequest {
+                destination: reader.read_u8()?,
+                id: reader.read_u32()?
+            },
+            0xb3 => Packet::DmaRemoveTraceReply {
+                succeeded: reader.read_bool()?
+            },
+            0xb4 => Packet::DmaPlaybackRequest {
+                destination: reader.read_u8()?,
+                id: reader.read_u32()?,
+                timestamp: reader.read_u64()?
+            },
+            0xb5 => Packet::DmaPlaybackReply {
+                succeeded: reader.read_bool()?
+            },
+            0xb6 => Packet::DmaPlaybackStatus {
+                destination: reader.read_u8()?,
+                id: reader.read_u32()?,
+                error: reader.read_u8()?,
+                channel: reader.read_u32()?,
+                timestamp: reader.read_u64()?
             },
 
             ty => return Err(Error::UnknownPacket(ty))
@@ -358,18 +424,68 @@ impl Packet {
                 writer.write_bool(succeeded)?;
             },
 
-            Packet::JdacBasicRequest { destination, dacno, reqno, param } => {
+            Packet::AnalyzerHeaderRequest { destination } => {
                 writer.write_u8(0xa0)?;
                 writer.write_u8(destination)?;
-                writer.write_u8(dacno)?;
-                writer.write_u8(reqno)?;
-                writer.write_u8(param)?;
-            }
-            Packet::JdacBasicReply { succeeded, retval } => {
-                writer.write_u8(0xa1)?;
-                writer.write_bool(succeeded)?;
-                writer.write_u8(retval)?;
             },
+            Packet::AnalyzerHeader { sent_bytes, total_byte_count, overflow_occurred } => { 
+                writer.write_u8(0xa1)?;
+                writer.write_u32(sent_bytes)?;
+                writer.write_u64(total_byte_count)?;
+                writer.write_bool(overflow_occurred)?;
+            },
+            Packet::AnalyzerDataRequest { destination } => {
+                writer.write_u8(0xa2)?;
+                writer.write_u8(destination)?;
+            },
+            Packet::AnalyzerData { last, length, data } => {
+                writer.write_u8(0xa3)?;
+                writer.write_bool(last)?;
+                writer.write_u16(length)?;
+                writer.write_all(&data[0..length as usize])?;
+            },
+
+            Packet::DmaAddTraceRequest { destination, id, last, trace, length } => {
+                writer.write_u8(0xb0)?;
+                writer.write_u8(destination)?;
+                writer.write_u32(id)?;
+                writer.write_bool(last)?;
+                // trace may be broken down to fit within drtio aux memory limit
+                // will be reconstructed by satellite
+                writer.write_u16(length)?;
+                writer.write_all(&trace[0..length as usize])?;
+            },
+            Packet::DmaAddTraceReply { succeeded } => {
+                writer.write_u8(0xb1)?;
+                writer.write_bool(succeeded)?;
+            },
+            Packet::DmaRemoveTraceRequest { destination, id } => {
+                writer.write_u8(0xb2)?;
+                writer.write_u8(destination)?;
+                writer.write_u32(id)?;
+            },
+            Packet::DmaRemoveTraceReply { succeeded } => {
+                writer.write_u8(0xb3)?;
+                writer.write_bool(succeeded)?;
+            },
+            Packet::DmaPlaybackRequest { destination, id, timestamp } => {
+                writer.write_u8(0xb4)?;
+                writer.write_u8(destination)?;
+                writer.write_u32(id)?;
+                writer.write_u64(timestamp)?;
+            },
+            Packet::DmaPlaybackReply { succeeded } => {
+                writer.write_u8(0xb5)?;
+                writer.write_bool(succeeded)?;
+            },
+            Packet::DmaPlaybackStatus { destination, id, error, channel, timestamp } => {
+                writer.write_u8(0xb6)?;
+                writer.write_u8(destination)?;
+                writer.write_u32(id)?;
+                writer.write_u8(error)?;
+                writer.write_u32(channel)?;
+                writer.write_u64(timestamp)?;
+            }
         }
         Ok(())
     }

@@ -9,13 +9,15 @@ ARTIQ-8 (Unreleased)
 Highlights:
 
 * Hardware support:
-  - Implemented Phaser-servo. This requires recent gateware on Phaser.
-  - Implemented Phaser-MIQRO support. This requires the Phaser MIQRO gateware
-    variant.
-  - Sampler: fixed ADC MU to Volt conversion factor for Sampler v2.2+.
-    For earlier hardware versions, specify the hardware version in the device
-    database file (e.g. ``"hw_rev": "v2.1"``) to use the correct conversion factor.
-  - Metlino and Sayma support has been dropped due to complications with synchronous RTIO clocking.
+   - Implemented Phaser-servo. This requires recent gateware on Phaser.
+   - Implemented Phaser-MIQRO support. This requires the Phaser MIQRO gateware
+     variant.
+   - Sampler: fixed ADC MU to Volt conversion factor for Sampler v2.2+.
+     For earlier hardware versions, specify the hardware version in the device
+     database file (e.g. ``"hw_rev": "v2.1"``) to use the correct conversion factor.
+   - Almazny v1.2. It is incompatible with the legacy versions and is the default. To use legacy
+     versions, specify ``almazny_hw_rev`` in the JSON description.
+   - Metlino and Sayma support has been dropped due to complications with synchronous RTIO clocking.
 * CPU (on softcore platforms) and AXI bus (on Zynq) are now clocked synchronously with the RTIO
   clock, to facilitate implementation of local processing on DRTIO satellites, and to slightly
   reduce RTIO latency.
@@ -23,6 +25,24 @@ Highlights:
   support legacy installations, but may be removed in a future release.
 * Added channel names to RTIO errors.
 * Full Python 3.10 support.
+* Distributed DMA is now supported, allowing DMA to be run directly on satellites for corresponding
+  RTIO events, increasing bandwidth in scenarios with heavy satellite usage.
+* Persistent datasets are now stored in a LMDB database for improved performance. PYON databases can
+  be converted with the script below.
+
+::
+
+  from sipyco import pyon
+  import lmdb
+
+  old = pyon.load_file("dataset_db.pyon")
+  new = lmdb.open("dataset_db.mdb", subdir=False, map_size=2**30)
+  with new.begin(write=True) as txn:
+    for key, value in old.items():
+      txn.put(key.encode(), pyon.encode(value).encode())
+  new.close()
+
+
 
 ARTIQ-7
 -------

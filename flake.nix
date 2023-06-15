@@ -1,7 +1,7 @@
 {
   description = "A leading-edge control system for quantum information experiments";
 
-  inputs.nixpkgs.url = github:NixOS/nixpkgs/nixos-22.11;
+  inputs.nixpkgs.url = github:NixOS/nixpkgs/nixos-23.05;
   inputs.mozilla-overlay = { url = github:mozilla/nixpkgs-mozilla; flake = false; };
   inputs.sipyco.url = github:m-labs/sipyco;
   inputs.sipyco.inputs.nixpkgs.follows = "nixpkgs";
@@ -21,7 +21,7 @@
       artiqVersionMajor = 8;
       artiqVersionMinor = self.sourceInfo.revCount or 0;
       artiqVersionId = self.sourceInfo.shortRev or "unknown";
-      artiqVersion = (builtins.toString artiqVersionMajor) + "." + (builtins.toString artiqVersionMinor) + "." + artiqVersionId + ".beta";
+      artiqVersion = (builtins.toString artiqVersionMajor) + "." + (builtins.toString artiqVersionMinor) + "+" + artiqVersionId + ".beta";
       artiqRev = self.sourceInfo.rev or "unknown";
 
       rustManifest = pkgs.fetchurl {
@@ -44,7 +44,7 @@
       });
 
       vivadoDeps = pkgs: with pkgs; [
-        libxcrypt
+        libxcrypt-legacy
         ncurses5
         zlib
         libuuid
@@ -69,18 +69,16 @@
 
       qasync = pkgs.python3Packages.buildPythonPackage rec {
         pname = "qasync";
-        version = "0.19.0";
+        version = "0.24.1";
         src = pkgs.fetchFromGitHub {
           owner = "CabbageDevelopment";
           repo = "qasync";
           rev = "v${version}";
-          sha256 = "sha256-xGAUAyOq+ELwzMGbLLmXijxLG8pv4a6tPvfAVOt1YwU=";
+          sha256 = "sha256-DAzmobw+c29Pt/URGO3bWXHBxgu9bDHhdTUBE9QJDe4=";
         };
         propagatedBuildInputs = [ pkgs.python3Packages.pyqt5 ];
-        checkInputs = [ pkgs.python3Packages.pytest ];
-        checkPhase = ''
-          pytest -k 'test_qthreadexec.py' # the others cause the test execution to be aborted, I think because of asyncio
-        '';
+        nativeCheckInputs = [ pkgs.python3Packages.pytest-runner pkgs.python3Packages.pytestCheckHook ];
+        disabledTestPaths = [ "tests/test_qeventloop.py" ];
       };
 
       outputcheck = pkgs.python3Packages.buildPythonApplication rec {
@@ -98,7 +96,7 @@
       libartiq-support = pkgs.stdenv.mkDerivation {
         name = "libartiq-support";
         src = self;
-        buildInputs = [ rustPlatform.rust.rustc ];
+        buildInputs = [ rust ];
         buildPhase = ''
           rustc $src/artiq/test/libartiq_support/lib.rs -Cpanic=unwind -g
         '';
@@ -126,8 +124,8 @@
 
         nativeBuildInputs = [ pkgs.qt5.wrapQtAppsHook ];
         # keep llvm_x and lld_x in sync with llvmlite
-        propagatedBuildInputs = [ pkgs.llvm_11 pkgs.lld_11 sipyco.packages.x86_64-linux.sipyco pythonparser artiq-comtools.packages.x86_64-linux.artiq-comtools ]
-          ++ (with pkgs.python3Packages; [ llvmlite pyqtgraph pygit2 numpy dateutil scipy prettytable pyserial levenshtein h5py pyqt5 qasync tqdm ]);
+        propagatedBuildInputs = [ pkgs.llvm_11 pkgs.lld_11 sipyco.packages.x86_64-linux.sipyco pythonparser pkgs.qt5.qtsvg artiq-comtools.packages.x86_64-linux.artiq-comtools ]
+          ++ (with pkgs.python3Packages; [ llvmlite pyqtgraph pygit2 numpy dateutil scipy prettytable pyserial levenshtein h5py pyqt5 qasync tqdm lmdb jsonschema ]);
 
         dontWrapQtApps = true;
         postFixup = ''
@@ -136,15 +134,23 @@
           wrapQtApp "$out/bin/artiq_session"
         '';
 
-        # Modifies PATH to pass the wrapped python environment (i.e. python3.withPackages(...) to subprocesses.
-        # Allows subprocesses using python to find all packages you have installed
+        preFixup =
+          ''
+          # Ensure that wrapProgram uses makeShellWrapper rather than makeBinaryWrapper
+          # brought in by wrapQtAppsHook. Only makeShellWrapper supports --run.
+          wrapProgram() { wrapProgramShell "$@"; }
+          '';
+        ## Modifies PATH to pass the wrapped python environment (i.e. python3.withPackages(...) to subprocesses.
+        ## Allows subprocesses using python to find all packages you have installed
         makeWrapperArgs = [
           ''--run 'if [ ! -z "$NIX_PYTHONPREFIX" ]; then export PATH=$NIX_PYTHONPREFIX/bin:$PATH;fi' ''
           "--set FONTCONFIG_FILE ${pkgs.fontconfig.out}/etc/fonts/fonts.conf"
         ];
 
         # FIXME: automatically propagate lld_11 llvm_11 dependencies
-        checkInputs = [ pkgs.lld_11 pkgs.llvm_11 libartiq-support pkgs.lit outputcheck ];
+        # cacert is required in the check stage only, as certificates are to be
+        # obtained from system elsewhere
+        nativeCheckInputs = [ pkgs.lld_11 pkgs.llvm_11 libartiq-support pkgs.lit outputcheck pkgs.cacert ];
         checkPhase = ''
           python -m unittest discover -v artiq.test
 
@@ -195,12 +201,12 @@
         propagatedBuildInputs = with pkgs.python3Packages; [ pyserial prettytable msgpack migen ];
       };
 
-      vivadoEnv = pkgs.buildFHSUserEnv {
+      vivadoEnv = pkgs.buildFHSEnv {
         name = "vivado-env";
         targetPkgs = vivadoDeps;
       };
 
-      vivado = pkgs.buildFHSUserEnv {
+      vivado = pkgs.buildFHSEnv {
         name = "vivado";
         targetPkgs = vivadoDeps;
         profile = "set -e; source /opt/Xilinx/Vivado/2021.1/settings64.sh";
@@ -218,9 +224,8 @@
             };
           };
           nativeBuildInputs = [
-            (pkgs.python3.withPackages (ps: [ ps.jsonschema migen misoc (artiq.withExperimentalFeatures experimentalFeatures) ]))
-            rustPlatform.rust.rustc
-            rustPlatform.rust.cargo
+            (pkgs.python3.withPackages(ps: [ migen misoc (artiq.withExperimentalFeatures experimentalFeatures) ps.packaging ]))
+            rust
             pkgs.cargo-xbuild
             pkgs.llvmPackages_11.clang-unwrapped
             pkgs.llvm_11
@@ -383,12 +388,14 @@
 
       defaultPackage.x86_64-linux = pkgs.python3.withPackages (ps: [ packages.x86_64-linux.artiq ]);
 
-      devShell.x86_64-linux = pkgs.mkShell {
+      # Main development shell with everything you need to develop ARTIQ on Linux.
+      # ARTIQ itself is not included in the environment, you can make Python use the current sources using e.g.
+      # export PYTHONPATH=`pwd`:$PYTHONPATH
+      devShells.x86_64-linux.default = pkgs.mkShell {
         name = "artiq-dev-shell";
         buildInputs = [
-          (pkgs.python3.withPackages(ps: with packages.x86_64-linux; [ migen misoc artiq ps.paramiko ps.jsonschema microscope ]))
-          rustPlatform.rust.rustc
-          rustPlatform.rust.cargo
+          (pkgs.python3.withPackages(ps: with packages.x86_64-linux; [ migen misoc ps.paramiko microscope ps.packaging ] ++ artiq.propagatedBuildInputs ))
+          rust
           pkgs.cargo-xbuild
           pkgs.llvmPackages_11.clang-unwrapped
           pkgs.llvm_11
@@ -408,10 +415,25 @@
           latex-artiq-manual
         ];
         shellHook = ''
-                export LIBARTIQ_SUPPORT=`libartiq-support`
-          export QT_PLUGIN_PATH=${pkgs.qt5.qtbase}/${pkgs.qt5.qtbase.dev.qtPluginPrefix}
-                export QML2_IMPORT_PATH=${pkgs.qt5.qtbase}/${pkgs.qt5.qtbase.dev.qtQmlPrefix}
+          export LIBARTIQ_SUPPORT=`libartiq-support`
+          export QT_PLUGIN_PATH=${pkgs.qt5.qtbase}/${pkgs.qt5.qtbase.dev.qtPluginPrefix}:${pkgs.qt5.qtsvg.bin}/${pkgs.qt5.qtbase.dev.qtPluginPrefix}
+          export QML2_IMPORT_PATH=${pkgs.qt5.qtbase}/${pkgs.qt5.qtbase.dev.qtQmlPrefix}
         '';
+      };
+
+      # Lighter development shell optimized for building firmware and flashing boards.
+      devShells.x86_64-linux.boards = pkgs.mkShell {
+        name = "artiq-boards-shell";
+        buildInputs = [
+          (pkgs.python3.withPackages(ps: with packages.x86_64-linux; [ migen misoc artiq ps.packaging ]))
+          rust
+          pkgs.cargo-xbuild
+          pkgs.llvmPackages_11.clang-unwrapped
+          pkgs.llvm_11
+          pkgs.lld_11
+          packages.x86_64-linux.vivado
+          packages.x86_64-linux.openocd-bscanspi
+        ];
       };
 
       packages.aarch64-linux = {
@@ -473,8 +495,8 @@
                 # Read "Ok" line when remote successfully locked
                 read LOCK_OK
 
-                artiq_flash -t kc705 -H rpi-1 -d ${packages.x86_64-linux.artiq-board-kc705-nist_clock}
-                sleep 15
+              artiq_flash -t kc705 -H rpi-1 -d ${packages.x86_64-linux.artiq-board-kc705-nist_clock}
+              sleep 30
 
                 export ARTIQ_ROOT=`python -c "import artiq; print(artiq.__path__[0])"`/examples/kc705_nist_clock
                 export ARTIQ_LOW_LATENCY=1

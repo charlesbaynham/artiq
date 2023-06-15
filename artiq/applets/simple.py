@@ -7,11 +7,51 @@ import string
 from qasync import QEventLoop, QtWidgets, QtCore
 
 from sipyco.sync_struct import Subscriber, process_mod
+from sipyco.pc_rpc import AsyncioClient as RPCClient
 from sipyco import pyon
 from sipyco.pipe_ipc import AsyncioChildComm
 
 
 logger = logging.getLogger(__name__)
+
+
+class AppletControlIPC:
+    def __init__(self, ipc):
+        self.ipc = ipc
+
+    def set_dataset(self, key, value, persist=None):
+        self.ipc.set_dataset(key, value, persist)
+
+    def mutate_dataset(self, key, index, value):
+        mod = {"action": "setitem", "path": [key, 1], "key": index, "value": value}
+        self.ipc.update_dataset(mod)
+
+    def append_to_dataset(self, key, value):
+        mod = {"action": "append", "path": [key, 1], "x": value}
+        self.ipc.update_dataset(mod)
+
+
+class AppletControlRPC:
+    def __init__(self, loop, dataset_ctl):
+        self.loop = loop
+        self.dataset_ctl = dataset_ctl
+        self.background_tasks = set()
+
+    def _background(self, coro, *args):
+        task = self.loop.create_task(coro(*args))
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
+
+    def set_dataset(self, key, value, persist=None):
+        self._background(self.dataset_ctl.set, key, value, persist)
+
+    def mutate_dataset(self, key, index, value):
+        mod = {"action": "setitem", "path": [key, 1], "key": index, "value": value}
+        self._background(self.dataset_ctl.update, mod)
+
+    def append_to_dataset(self, key, value):
+        mod = {"action": "append", "path": [key, 1], "x": value}
+        self._background(self.dataset_ctl.update, mod)
 
 
 class AppletIPCClient(AsyncioChildComm):
@@ -64,13 +104,23 @@ class AppletIPCClient(AsyncioChildComm):
                              exc_info=True)
                 self.close_cb()
 
-    def subscribe(self, datasets, init_cb, mod_cb, dataset_prefixes=[]):
+    def subscribe(self, datasets, init_cb, mod_cb, dataset_prefixes=[], *, loop):
         self.write_pyon({"action": "subscribe",
                          "datasets": datasets,
                          "dataset_prefixes": dataset_prefixes})
         self.init_cb = init_cb
         self.mod_cb = mod_cb
-        asyncio.ensure_future(self.listen())
+        self.listen_task = loop.create_task(self.listen())
+
+    def set_dataset(self, key, value, persist=None):
+        self.write_pyon({"action": "set_dataset",
+                         "key": key,
+                         "value": value,
+                         "persist": persist})
+
+    def update_dataset(self, mod):
+        self.write_pyon({"action": "update_dataset",
+                         "mod": mod})
 
 
 class SimpleApplet:
@@ -92,8 +142,11 @@ class SimpleApplet:
                  "for dataset notifications "
                  "(ignored in embedded mode)")
         group.add_argument(
-            "--port", default=3250, type=int,
-            help="TCP port to connect to")
+            "--port-notify", default=3250, type=int,
+            help="TCP port to connect to for notifications (ignored in embedded mode)")
+        group.add_argument(
+            "--port-control", default=3251, type=int,
+            help="TCP port to connect to for control (ignored in embedded mode)")
 
         self._arggroup_datasets = self.argparser.add_argument_group("datasets")
 
@@ -132,8 +185,21 @@ class SimpleApplet:
         if self.embed is not None:
             self.ipc.close()
 
+    def ctl_init(self):
+        if self.embed is None:
+            dataset_ctl = RPCClient()
+            self.loop.run_until_complete(dataset_ctl.connect_rpc(
+                self.args.server, self.args.port_control, "master_dataset_db"))
+            self.ctl = AppletControlRPC(self.loop, dataset_ctl)
+        else:
+            self.ctl = AppletControlIPC(self.ipc)
+
+    def ctl_close(self):
+        if self.embed is None:
+            self.ctl.dataset_ctl.close_rpc()
+
     def create_main_widget(self):
-        self.main_widget = self.main_widget_class(self.args)
+        self.main_widget = self.main_widget_class(self.args, self.ctl)
         if self.embed is not None:
             self.ipc.set_close_cb(self.main_widget.close)
             if os.name == "nt":
@@ -204,8 +270,8 @@ class SimpleApplet:
                 self.mod_buffer.append(mod)
             else:
                 self.mod_buffer = [mod]
-                asyncio.get_event_loop().call_later(self.args.update_delay,
-                                                    self.flush_mod_buffer)
+                self.loop.call_later(self.args.update_delay,
+                                     self.flush_mod_buffer)
         else:
             self.emit_data_changed(self.data, [mod])
 
@@ -214,10 +280,11 @@ class SimpleApplet:
             self.subscriber = Subscriber("datasets",
                                          self.sub_init, self.sub_mod)
             self.loop.run_until_complete(self.subscriber.connect(
-                self.args.server, self.args.port))
+                self.args.server, self.args.port_notify))
         else:
             self.ipc.subscribe(self.datasets, self.sub_init, self.sub_mod,
-                               dataset_prefixes=self.dataset_prefixes)
+                               dataset_prefixes=self.dataset_prefixes,
+                               loop=self.loop)
 
     def unsubscribe(self):
         if self.embed is None:
@@ -229,12 +296,16 @@ class SimpleApplet:
         try:
             self.ipc_init()
             try:
-                self.create_main_widget()
-                self.subscribe()
+                self.ctl_init()
                 try:
-                    self.loop.run_forever()
+                    self.create_main_widget()
+                    self.subscribe()
+                    try:
+                        self.loop.run_forever()
+                    finally:
+                        self.unsubscribe()
                 finally:
-                    self.unsubscribe()
+                    self.ctl_close()
             finally:
                 self.ipc_close()
         finally:

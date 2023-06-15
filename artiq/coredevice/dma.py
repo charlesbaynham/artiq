@@ -6,7 +6,7 @@ alone could achieve.
 """
 
 from artiq.language.core import syscall, kernel
-from artiq.language.types import TInt32, TInt64, TStr, TNone, TTuple
+from artiq.language.types import TInt32, TInt64, TStr, TNone, TTuple, TBool
 from artiq.coredevice.exceptions import DMAError
 
 from numpy import int64
@@ -17,7 +17,7 @@ def dma_record_start(name: TStr) -> TNone:
     raise NotImplementedError("syscall not simulated")
 
 @syscall
-def dma_record_stop(duration: TInt64) -> TNone:
+def dma_record_stop(duration: TInt64, enable_ddma: TBool) -> TNone:
     raise NotImplementedError("syscall not simulated")
 
 @syscall
@@ -25,11 +25,11 @@ def dma_erase(name: TStr) -> TNone:
     raise NotImplementedError("syscall not simulated")
 
 @syscall
-def dma_retrieve(name: TStr) -> TTuple([TInt64, TInt32]):
+def dma_retrieve(name: TStr) -> TTuple([TInt64, TInt32, TBool]):
     raise NotImplementedError("syscall not simulated")
 
 @syscall
-def dma_playback(timestamp: TInt64, ptr: TInt32) -> TNone:
+def dma_playback(timestamp: TInt64, ptr: TInt32, enable_ddma: TBool) -> TNone:
     raise NotImplementedError("syscall not simulated")
 
 
@@ -47,6 +47,7 @@ class DMARecordContextManager:
     def __init__(self):
         self.name = ""
         self.saved_now_mu = int64(0)
+        self.enable_ddma = False
 
     @kernel
     def __enter__(self):
@@ -56,7 +57,7 @@ class DMARecordContextManager:
 
     @kernel
     def __exit__(self, type, value, traceback):
-        dma_record_stop(now_mu()) # see above
+        dma_record_stop(now_mu(), self.enable_ddma) # see above
         at_mu(self.saved_now_mu)
 
 
@@ -74,12 +75,20 @@ class CoreDMA:
         self.epoch    = 0
 
     @kernel
-    def record(self, name):
+    def record(self, name, enable_ddma=False):
         """Returns a context manager that will record a DMA trace called ``name``.
         Any previously recorded trace with the same name is overwritten.
-        The trace will persist across kernel switches."""
+        The trace will persist across kernel switches.
+
+        In DRTIO context, distributed DMA can be toggled with ``enable_ddma``.
+        Enabling it allows running DMA on satellites, rather than sending all
+        events from the master.
+
+        Keeping it disabled it may improve performance in some scenarios, 
+        e.g. when there are many small satellite buffers."""
         self.epoch += 1
         self.recorder.name = name
+        self.recorder.enable_ddma = enable_ddma
         return self.recorder
 
     @kernel
@@ -92,24 +101,24 @@ class CoreDMA:
     def playback(self, name):
         """Replays a previously recorded DMA trace. This function blocks until
         the entire trace is submitted to the RTIO FIFOs."""
-        (advance_mu, ptr) = dma_retrieve(name)
-        dma_playback(now_mu(), ptr)
+        (advance_mu, ptr, uses_ddma) = dma_retrieve(name)
+        dma_playback(now_mu(), ptr, uses_ddma)
         delay_mu(advance_mu)
 
     @kernel
     def get_handle(self, name):
         """Returns a handle to a previously recorded DMA trace. The returned handle
         is only valid until the next call to :meth:`record` or :meth:`erase`."""
-        (advance_mu, ptr) = dma_retrieve(name)
-        return (self.epoch, advance_mu, ptr)
+        (advance_mu, ptr, uses_ddma) = dma_retrieve(name)
+        return (self.epoch, advance_mu, ptr, uses_ddma)
 
     @kernel
     def playback_handle(self, handle):
         """Replays a handle obtained with :meth:`get_handle`. Using this function
         is much faster than :meth:`playback` for replaying a set of traces repeatedly,
         but incurs the overhead of managing the handles onto the programmer."""
-        (epoch, advance_mu, ptr) = handle
+        (epoch, advance_mu, ptr, uses_ddma) = handle
         if self.epoch != epoch:
             raise DMAError("Invalid handle")
-        dma_playback(now_mu(), ptr)
+        dma_playback(now_mu(), ptr, uses_ddma)
         delay_mu(advance_mu)

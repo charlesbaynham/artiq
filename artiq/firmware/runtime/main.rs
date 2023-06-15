@@ -25,6 +25,7 @@ extern crate logger_artiq;
 extern crate proto_artiq;
 extern crate riscv;
 
+use alloc::collections::BTreeMap;
 use core::cell::RefCell;
 use core::convert::TryFrom;
 use smoltcp::wire::HardwareAddress;
@@ -42,6 +43,7 @@ use proto_artiq::{mgmt_proto, moninj_proto, rpc_proto, session_proto, kernel_pro
 use proto_artiq::analyzer_proto;
 
 use riscv::register::{mcause, mepc, mtval};
+use smoltcp::iface::Routes;
 use ip_addr_storage::InterfaceBuilderEx;
 
 mod rtio_clocking;
@@ -151,11 +153,22 @@ fn startup() {
     } else {
         false
     };
-    let interface = smoltcp::iface::InterfaceBuilder::new(net_device, vec![])
+    let mut interface = smoltcp::iface::InterfaceBuilder::new(net_device, vec![])
         .hardware_addr(HardwareAddress::Ethernet(net_addresses.hardware_addr))
         .init_ip_addrs(&net_addresses)
         .neighbor_cache(neighbor_cache)
+        .routes(Routes::new(BTreeMap::new()))
         .finalize();
+
+    if !use_dhcp {
+        if let Some(ipv4_default_route) = net_addresses.ipv4_default_route {
+            interface.routes_mut().add_default_ipv4_route(ipv4_default_route).unwrap();
+        }
+    }
+
+    if let Some(ipv6_default_route) = net_addresses.ipv6_default_route {
+        interface.routes_mut().add_default_ipv6_route(ipv6_default_route).unwrap();
+    }
 
     #[cfg(has_drtio)]
     let drtio_routing_table = urc::Urc::new(RefCell::new(
@@ -169,6 +182,8 @@ fn startup() {
     drtio_routing::interconnect_disable_all();
     let aux_mutex = sched::Mutex::new();
 
+    let ddma_mutex = sched::Mutex::new();
+
     let mut scheduler = sched::Scheduler::new(interface);
     let io = scheduler.io();
 
@@ -176,23 +191,31 @@ fn startup() {
         io.spawn(4096, dhcp::dhcp_thread);
     }
 
-    rtio_mgt::startup(&io, &aux_mutex, &drtio_routing_table, &up_destinations);
+    rtio_mgt::startup(&io, &aux_mutex, &drtio_routing_table, &up_destinations, &ddma_mutex);
 
     io.spawn(4096, mgmt::thread);
     {
         let aux_mutex = aux_mutex.clone();
         let drtio_routing_table = drtio_routing_table.clone();
         let up_destinations = up_destinations.clone();
-        io.spawn(16384, move |io| { session::thread(io, &aux_mutex, &drtio_routing_table, &up_destinations) });
+        let ddma_mutex = ddma_mutex.clone();
+        io.spawn(16384, move |io| { session::thread(io, &aux_mutex, &drtio_routing_table, &up_destinations, &ddma_mutex) });
     }
     #[cfg(any(has_rtio_moninj, has_drtio))]
     {
         let aux_mutex = aux_mutex.clone();
+        let ddma_mutex = ddma_mutex.clone();
         let drtio_routing_table = drtio_routing_table.clone();
-        io.spawn(4096, move |io| { moninj::thread(io, &aux_mutex, &drtio_routing_table) });
+        io.spawn(4096, move |io| { moninj::thread(io, &aux_mutex, &ddma_mutex, &drtio_routing_table) });
     }
     #[cfg(has_rtio_analyzer)]
-    io.spawn(4096, analyzer::thread);
+    {
+        let aux_mutex = aux_mutex.clone();
+        let drtio_routing_table = drtio_routing_table.clone();
+        let up_destinations = up_destinations.clone();
+        let ddma_mutex = ddma_mutex.clone();
+        io.spawn(8192, move |io| { analyzer::thread(io, &aux_mutex, &ddma_mutex, &drtio_routing_table, &up_destinations) });
+    }
 
     #[cfg(has_grabber)]
     io.spawn(4096, grabber_thread);

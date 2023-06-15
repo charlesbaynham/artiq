@@ -79,10 +79,10 @@ def process_header(output, description):
 
 
 class PeripheralManager:
-    def __init__(self, output, master_description):
+    def __init__(self, output, primary_description):
         self.counts = defaultdict(int)
         self.output = output
-        self.master_description = master_description
+        self.primary_description = primary_description
 
     def get_name(self, ty):
         count = self.counts[ty]
@@ -115,7 +115,7 @@ class PeripheralManager:
                      name=name[i],
                      class_name=classes[i // 4],
                      channel=rtio_offset + next(channel))
-        if peripheral.get("edge_counter", False):
+        if peripheral["edge_counter"]:
             for i in range(num_channels):
                 class_name = classes[i // 4]
                 if class_name == "TTLInOut":
@@ -140,14 +140,14 @@ class PeripheralManager:
                             "class": "SPIMaster",
                             "arguments": {{"channel": 0x{channel:06x}}}
                         }}""",
-                     name=self.get_name(spi.get("name", "dio_spi")),
+                     name=self.get_name(spi["name"]),
                      channel=rtio_offset + next(channel))
-        for ttl in peripheral.get("ttl", []):
+        for ttl in peripheral["ttl"]:
             ttl_class_names = {
                 "input": "TTLInOut",
                 "output": "TTLOut"
             }
-            name = self.get_name(ttl.get("name", "ttl"))
+            name = self.get_name(ttl["name"])
             self.gen("""
                 device_db["{name}"] = {{
                     "type": "local",
@@ -158,7 +158,7 @@ class PeripheralManager:
                      name=name,
                      class_name=ttl_class_names[ttl["direction"]],
                      channel=rtio_offset + next(channel))
-            if ttl.get("edge_counter", False):
+            if ttl["edge_counter"]:
                 self.gen("""
                     device_db["{name}_counter"] = {{
                         "type": "local",
@@ -237,7 +237,7 @@ class PeripheralManager:
             }}""",
             name=urukul_name,
             sync_device="\"ttl_{name}_sync\"".format(name=urukul_name) if synchronization else "None",
-            refclk=peripheral.get("refclk", self.master_description["rtio_frequency"]),
+            refclk=peripheral.get("refclk", self.primary_description["rtio_frequency"]),
             clk_sel=peripheral["clk_sel"])
         dds = peripheral["dds"]
         pll_vco = peripheral.get("pll_vco")
@@ -250,6 +250,7 @@ class PeripheralManager:
                         "class": "AD9910",
                         "arguments": {{
                             "pll_n": {pll_n},
+                            "pll_en": {pll_en},
                             "chip_select": {chip_select},
                             "cpld_device": "{name}_cpld"{sw}{pll_vco}{sync_delay_seed}{io_update_delay}
                         }}
@@ -259,7 +260,7 @@ class PeripheralManager:
                     uchn=i,
                     sw=",\n        \"sw_device\": \"ttl_{name}_sw{uchn}\"".format(name=urukul_name, uchn=i) if len(peripheral["ports"]) > 1 else "",
                     pll_vco=",\n        \"pll_vco\": {}".format(pll_vco) if pll_vco is not None else "",
-                    pll_n=peripheral.get("pll_n", 32),
+                    pll_n=peripheral.get("pll_n", 32), pll_en=peripheral["pll_en"],
                     sync_delay_seed=",\n        \"sync_delay_seed\": \"eeprom_{}:{}\"".format(urukul_name, 64 + 4*i) if synchronization else "",
                     io_update_delay=",\n        \"io_update_delay\": \"eeprom_{}:{}\"".format(urukul_name, 64 + 4*i) if synchronization else "")
             elif dds == "ad9912":
@@ -270,6 +271,7 @@ class PeripheralManager:
                         "class": "AD9912",
                         "arguments": {{
                             "pll_n": {pll_n},
+                            "pll_en": {pll_en},
                             "chip_select": {chip_select},
                             "cpld_device": "{name}_cpld"{sw}{pll_vco}
                         }}
@@ -279,12 +281,13 @@ class PeripheralManager:
                     uchn=i,
                     sw=",\n        \"sw_device\": \"ttl_{name}_sw{uchn}\"".format(name=urukul_name, uchn=i) if len(peripheral["ports"]) > 1 else "",
                     pll_vco=",\n        \"pll_vco\": {}".format(pll_vco) if pll_vco is not None else "",
-                    pll_n=peripheral.get("pll_n", 8))
+                    pll_n=peripheral.get("pll_n", 8), pll_en=peripheral["pll_en"])
             else:
                 raise ValueError
         return next(channel)
 
     def process_mirny(self, rtio_offset, peripheral):
+        legacy_almazny = ("v1.0", "v1.1")
         mirny_name = self.get_name("mirny")
         channel = count(0)
         self.gen("""
@@ -324,6 +327,20 @@ class PeripheralManager:
                 name=mirny_name,
                 mchn=i)
 
+            if peripheral["almazny"] and peripheral["almazny_hw_rev"] not in legacy_almazny:
+                self.gen("""
+                    device_db["{name}_almazny{i}"] = {{
+                        "type": "local",
+                        "module": "artiq.coredevice.almazny",
+                        "class": "AlmaznyChannel",
+                        "arguments": {{
+                            "host_mirny": "{name}_cpld",
+                            "channel": {i},
+                        }},
+                    }}""",
+                    name=mirny_name,
+                    i=i)
+
         clk_sel = peripheral["clk_sel"]
         if isinstance(peripheral["clk_sel"], str):
             clk_sel = '"' + peripheral["clk_sel"] + '"'
@@ -341,13 +358,12 @@ class PeripheralManager:
             name=mirny_name,
             refclk=peripheral["refclk"],
             clk_sel=clk_sel)
-        almazny = peripheral.get("almazny", False)
-        if almazny:
+        if peripheral["almazny"] and peripheral["almazny_hw_rev"] in legacy_almazny:
             self.gen("""
             device_db["{name}_almazny"] = {{
                 "type": "local",
-                "module": "artiq.coredevice.mirny",
-                "class": "Almazny",
+                "module": "artiq.coredevice.almazny",
+                "class": "AlmaznyLegacy",
                 "arguments": {{
                     "host_mirny": "{name}_cpld",
                 }},
@@ -453,7 +469,7 @@ class PeripheralManager:
             }}""",
             suservo_name=suservo_name,
             sampler_name=sampler_name,
-            sampler_hw_rev=peripheral.get("sampler_hw_rev", "v2.2"),
+            sampler_hw_rev=peripheral["sampler_hw_rev"],
             cpld_names_list=[urukul_name + "_cpld" for urukul_name in urukul_names],
             dds_names_list=[urukul_name + "_dds" for urukul_name in urukul_names],
             suservo_channel=rtio_offset+next(channel))
@@ -491,16 +507,17 @@ class PeripheralManager:
                     "class": "AD9910",
                     "arguments": {{
                         "pll_n": {pll_n},
+                        "pll_en": {pll_en},
                         "chip_select": 3,
                         "cpld_device": "{urukul_name}_cpld"{pll_vco}
                     }}
                 }}""",
                 urukul_name=urukul_name,
                 urukul_channel=rtio_offset+next(channel),
-                refclk=peripheral.get("refclk", self.master_description["rtio_frequency"]),
+                refclk=peripheral.get("refclk", self.primary_description["rtio_frequency"]),
                 clk_sel=peripheral["clk_sel"],
                 pll_vco=",\n        \"pll_vco\": {}".format(pll_vco) if pll_vco is not None else "",
-                pll_n=peripheral["pll_n"])
+                pll_n=peripheral["pll_n"],  pll_en=peripheral["pll_en"])
         return next(channel)
 
     def process_zotino(self, rtio_offset, peripheral):
@@ -565,12 +582,12 @@ class PeripheralManager:
         return 1
 
     def process_phaser(self, rtio_offset, peripheral):
-        mode = peripheral.get("mode", "base")
+        mode = peripheral["mode"]
         if mode == "miqro":
-            dac = f', "dac": {{"pll_m": 16, "pll_n": 3, "interpolation": 2}}, "gw_rev"={PHASER_GW_MIQRO}'
+            dac = f', "dac": {{"pll_m": 16, "pll_n": 3, "interpolation": 2}}, "gw_rev": {PHASER_GW_MIQRO}'
             n_channels = 3
         else:
-            dac = f', "gw_rev"={PHASER_GW_BASE}'
+            dac = f', "gw_rev": {PHASER_GW_BASE}'
             n_channels = 5
         self.gen("""
             device_db["{name}"] = {{
@@ -620,30 +637,30 @@ class PeripheralManager:
         return 2
 
 
-def process(output, master_description, satellites):
-    base = master_description["base"]
-    if base not in ("standalone", "master"):
-        raise ValueError("Invalid master base")
+def process(output, primary_description, satellites):
+    drtio_role = primary_description["drtio_role"]
+    if drtio_role not in ("standalone", "master"):
+        raise ValueError("Invalid primary node DRTIO role")
 
-    if base == "standalone" and satellites:
+    if drtio_role == "standalone" and satellites:
         raise ValueError("A standalone system cannot have satellites")
 
-    process_header(output, master_description)
+    process_header(output, primary_description)
 
-    pm = PeripheralManager(output, master_description)
+    pm = PeripheralManager(output, primary_description)
 
-    print("# {} peripherals".format(base), file=output)
+    print("# {} peripherals".format(drtio_role), file=output)
     rtio_offset = 0
-    for peripheral in master_description["peripherals"]:
+    for peripheral in primary_description["peripherals"]:
         n_channels = pm.process(rtio_offset, peripheral)
         rtio_offset += n_channels
-    if base == "standalone":
+    if drtio_role == "standalone":
         n_channels = pm.add_board_leds(rtio_offset)
         rtio_offset += n_channels
 
     for destination, description in satellites:
-        if description["base"] != "satellite":
-            raise ValueError("Invalid base for satellite at destination {}".format(destination))
+        if description["drtio_role"] != "satellite":
+            raise ValueError("Invalid DRTIO role for satellite at destination {}".format(destination))
 
         print("# DEST#{} peripherals".format(destination), file=output)
         rtio_offset = destination << 16
@@ -658,8 +675,8 @@ def main():
     parser.add_argument("--version", action="version",
                         version="ARTIQ v{}".format(artiq_version),
                         help="print the ARTIQ version number")
-    parser.add_argument("master_description", metavar="MASTER_DESCRIPTION",
-                        help="JSON system description file for the standalone or master node")
+    parser.add_argument("primary_description", metavar="PRIMARY_DESCRIPTION",
+                        help="JSON system description file for the primary (standalone or master) node")
     parser.add_argument("-o", "--output",
                         help="output file, defaults to standard output if omitted")
     parser.add_argument("-s", "--satellite", nargs=2, action="append",
@@ -669,7 +686,7 @@ def main():
 
     args = parser.parse_args()
 
-    master_description = jsondesc.load(args.master_description)
+    primary_description = jsondesc.load(args.primary_description)
 
     satellites = []
     for destination, description_path in args.satellite:
@@ -678,9 +695,9 @@ def main():
 
     if args.output is not None:
         with open(args.output, "w") as f:
-            process(f, master_description, satellites)
+            process(f, primary_description, satellites)
     else:
-        process(sys.stdout, master_description, satellites)
+        process(sys.stdout, primary_description, satellites)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ SECTIONS
     .text :
     {
         *(.text .text.*)
+        . = ALIGN(0x40000);
     } > main_ram
 
     .eh_frame :
@@ -65,5 +66,13 @@ SECTIONS
         _estack = .;
         . += 0x10000;
         _fstack = . - 16;
+    } > main_ram
+
+    /* 64MB heap for alloc use */
+    .heap (NOLOAD) : ALIGN(16)
+    {
+        _fheap = .;
+        . = . + 0x4000000;
+        _eheap = .;
     } > main_ram
 }
