@@ -21,7 +21,7 @@ class AlmaznyLegacy:
     This applies to Almazny hardware v1.1 and earlier.
     Use :class:`artiq.coredevice.almazny.AlmaznyChannel` for Almazny v1.2 and later.
 
-    :param host_mirny - Mirny device Almazny is connected to
+    :param host_mirny: Mirny device Almazny is connected to
     """
 
     def __init__(self, dmgr, host_mirny):
@@ -61,9 +61,10 @@ class AlmaznyLegacy:
     def set_att(self, channel, att, rf_switch=True):
         """
         Sets attenuators on chosen shift register (channel).
-        :param channel - index of the register [0-3]
-        :param att_mu - attenuation setting in dBm [0-31.5]
-        :param rf_switch - rf switch (bool)
+
+        :param channel: index of the register [0-3]
+        :param att: attenuation setting in dBm [0-31.5]
+        :param rf_switch: rf switch (bool)
         """
         self.set_att_mu(channel, self.att_to_mu(att), rf_switch)
 
@@ -71,9 +72,10 @@ class AlmaznyLegacy:
     def set_att_mu(self, channel, att_mu, rf_switch=True):
         """
         Sets attenuators on chosen shift register (channel).
-        :param channel - index of the register [0-3]
-        :param att_mu - attenuation setting in machine units [0-63]
-        :param rf_switch - rf switch (bool)
+
+        :param channel: index of the register [0-3]
+        :param att_mu: attenuation setting in machine units [0-63]
+        :param rf_switch: rf switch (bool)
         """
         self.channel_sw[channel] = 1 if rf_switch else 0
         self.att_mu[channel] = att_mu
@@ -83,7 +85,8 @@ class AlmaznyLegacy:
     def output_toggle(self, oe):
         """
         Toggles output on all shift registers on or off.
-        :param oe - toggle output enable (bool)
+
+        :param oe: toggle output enable (bool)
         """
         self.output_enable = oe
         cfg_reg = self.mirny_cpld.read_reg(1)
@@ -128,6 +131,7 @@ class AlmaznyChannel:
     This driver requires Almazny hardware revision v1.2 or later
     and Mirny CPLD gateware v0.3 or later.
     Use :class:`artiq.coredevice.almazny.AlmaznyLegacy` for Almazny hardware v1.1 and earlier.
+
     :param host_mirny: Mirny CPLD device name
     :param channel: channel index (0-3)
     """
@@ -141,6 +145,7 @@ class AlmaznyChannel:
         """
         Convert an attenuation in dB, RF switch state and LED state to machine
         units.
+
         :param att: attenuator setting in dB (0-31.5)
         :param enable: RF switch state (bool)
         :param led: LED state (bool)
@@ -162,6 +167,7 @@ class AlmaznyChannel:
     def set_mu(self, mu):
         """
         Set channel state (machine units).
+
         :param mu: channel state in machine units.
         """
         self.mirny_cpld.write_ext(
@@ -171,6 +177,7 @@ class AlmaznyChannel:
     def set(self, att, enable, led=False):
         """
         Set attenuation, RF switch, and LED state (SI units).
+
         :param att: attenuator setting in dB (0-31.5)
         :param enable: RF switch state (bool)
         :param led: LED state (bool)

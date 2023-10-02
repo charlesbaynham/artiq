@@ -124,7 +124,7 @@ def peripheral_phaser(module, peripheral, **kwargs):
     if len(peripheral["ports"]) != 1:
         raise ValueError("wrong number of ports")
     eem.Phaser.add_std(module, peripheral["ports"][0],
-        peripheral["base"], **kwargs)
+        peripheral["mode"], **kwargs)
 
 
 def peripheral_hvamp(module, peripheral, **kwargs):
@@ -133,6 +133,15 @@ def peripheral_hvamp(module, peripheral, **kwargs):
     eem.HVAmp.add_std(module, peripheral["ports"][0],
         ttl_simple.Output, **kwargs)
 
+def peripheral_shuttler(module, peripheral, **kwargs):
+    if len(peripheral["ports"]) == 1:
+        port = peripheral["ports"][0]
+        port_aux = None
+    elif len(peripheral["ports"]) == 2:
+        port, port_aux = peripheral["ports"]
+    else:
+        raise ValueError("wrong number of ports")
+    eem.Shuttler.add_std(module, port, port_aux)
 
 peripheral_processors = {
     "dio": peripheral_dio,
@@ -147,6 +156,7 @@ peripheral_processors = {
     "fastino": peripheral_fastino,
     "phaser": peripheral_phaser,
     "hvamp": peripheral_hvamp,
+    "shuttler": peripheral_shuttler,
 }
 
 

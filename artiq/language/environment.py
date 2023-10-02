@@ -100,7 +100,7 @@ class NumberValue(_SimpleArgProcessor):
     """An argument that can take a numerical value.
 
     If ``type=="auto"``, the result will be a ``float`` unless
-    ndecimals = 0, scale = 1 and step is an integer. Setting ``type`` to
+    precision = 0, scale = 1 and step is an integer. Setting ``type`` to
     ``int`` will also result in an error unless these conditions are met.
 
     When ``scale`` is not specified, and the unit is a common one (i.e.
@@ -123,14 +123,17 @@ class NumberValue(_SimpleArgProcessor):
         buttons in a UI. The default is the scale divided by 10.
     :param min: The minimum value of the argument.
     :param max: The maximum value of the argument.
-    :param ndecimals: The number of decimals a UI should use.
+    :param precision: The maximum number of decimals a UI should use.
     :param type: Type of this number. Accepts ``"float"``, ``"int"`` or
                  ``"auto"``. Defaults to ``"auto"``.
     """
     valid_types = ["auto", "float", "int"]
 
-    def __init__(self, default=NoDefault, unit="", scale=None,
-                 step=None, min=None, max=None, ndecimals=2, type="auto"):
+    def __init__(self, default=NoDefault, unit="", *, scale=None,
+                 step=None, min=None, max=None, precision=2, type="auto", ndecimals=None):
+        if ndecimals is not None:
+            print("DeprecationWarning: 'ndecimals' is deprecated. Please use 'precision' instead.")
+            precision = ndecimals
         if scale is None:
             if unit == "":
                 scale = 1.0
@@ -147,7 +150,7 @@ class NumberValue(_SimpleArgProcessor):
         self.step = step
         self.min = min
         self.max = max
-        self.ndecimals = ndecimals
+        self.precision = precision
         self.type = type
 
         if self.type not in NumberValue.valid_types:
@@ -155,7 +158,7 @@ class NumberValue(_SimpleArgProcessor):
 
         if self.type == "int" and not self._is_int_compatible():
             raise ValueError(("Value marked as integer but settings are "
-                              "not compatible. Please set ndecimals = 0, "
+                              "not compatible. Please set precision = 0, "
                               "scale = 1 and step to an integer"))
 
         super().__init__(default)
@@ -165,7 +168,7 @@ class NumberValue(_SimpleArgProcessor):
         Are the settings other than `type` compatible with this being
         an integer?
         '''
-        return (self.ndecimals == 0
+        return (self.precision == 0
                 and int(self.step) == self.step
                 and self.scale == 1)
 
@@ -191,7 +194,7 @@ class NumberValue(_SimpleArgProcessor):
         d["step"] = self.step
         d["min"] = self.min
         d["max"] = self.max
-        d["ndecimals"] = self.ndecimals
+        d["precision"] = self.precision
         d["type"] = self.type
         return d
 
@@ -337,13 +340,21 @@ class HasEnvironment:
         self.kernel_invariants = kernel_invariants | {key}
 
     @rpc(flags={"async"})
-    def set_dataset(self, key, value,
+    def set_dataset(self, key, value, *,
+                    unit=None, scale=None, precision=None,
                     broadcast=False, persist=False, archive=True):
         """Sets the contents and handling modes of a dataset.
 
         Datasets must be scalars (``bool``, ``int``, ``float`` or NumPy scalar)
         or NumPy arrays.
 
+        :param unit: A string representing the unit of the value.
+        :param scale: A numerical factor that is used to adjust the value of 
+            the dataset to match the scale or units of the experiment's
+            reference frame when the value is displayed.
+        :param precision: The maximum number of digits to print after the
+            decimal point. Set ``precision=None`` to print as many digits as 
+            necessary to uniquely specify the value. Uses IEEE unbiased rounding.
         :param broadcast: the data is sent in real-time to the master, which
             dispatches it.
         :param persist: the master should store the data on-disk. Implies
@@ -351,7 +362,14 @@ class HasEnvironment:
         :param archive: the data is saved into the local storage of the current
             run (archived as a HDF5 file).
         """
-        self.__dataset_mgr.set(key, value, broadcast, persist, archive)
+        metadata = {}
+        if unit is not None:
+            metadata["unit"] = unit
+        if scale is not None:
+            metadata["scale"] = scale
+        if precision is not None:
+            metadata["precision"] = precision
+        self.__dataset_mgr.set(key, value, metadata, broadcast, persist, archive)
 
     @rpc(flags={"async"})
     def mutate_dataset(self, key, index, value):
@@ -399,6 +417,24 @@ class HasEnvironment:
         """
         try:
             return self.__dataset_mgr.get(key, archive)
+        except KeyError:
+            if default is NoDefault:
+                raise
+            else:
+                return default
+
+    def get_dataset_metadata(self, key, default=NoDefault):
+        """Returns the metadata of a dataset.
+         
+        Returns dictionary with items describing the dataset, including the units, 
+        scale and precision. 
+
+        This function is used to get additional information for displaying the dataset.
+
+        See ``set_dataset`` for documentation of metadata items.
+        """
+        try:
+            return self.__dataset_mgr.get_metadata(key)
         except KeyError:
             if default is NoDefault:
                 raise

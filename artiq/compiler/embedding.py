@@ -5,6 +5,7 @@ the references to the host objects and translates the functions
 annotated as ``@kernel`` when they are referenced.
 """
 
+import typing
 import os, re, linecache, inspect, textwrap, types as pytypes, numpy
 from collections import OrderedDict, defaultdict
 
@@ -17,6 +18,13 @@ from ..language import core as language_core
 from . import types, builtins, asttyped, math_fns, prelude
 from .transforms import ASTTypedRewriter, Inferencer, IntMonomorphizer, TypedtreePrinter
 from .transforms.asttyped_rewriter import LocalExtractor
+
+try:
+    # From numpy=1.25.0 dispatching for `__array_function__` is done via
+    # a C wrapper: https://github.com/numpy/numpy/pull/23020
+    from numpy.core._multiarray_umath import _ArrayFunctionDispatcher
+except ImportError:
+    _ArrayFunctionDispatcher = None    
 
 
 class SpecializedFunction:
@@ -45,7 +53,14 @@ class EmbeddingMap:
         self.object_forward_map = {}
         self.object_reverse_map = {}
         self.module_map = {}
+
+        # type_map connects the host Python `type` to the pair of associated
+        # `(TInstance, TConstructor)`s. The `used_…_names` sets cache the
+        # respective `.name`s for O(1) collision avoidance.
         self.type_map = {}
+        self.used_instance_type_names = set()
+        self.used_constructor_type_names = set()
+
         self.function_map = {}
         self.str_forward_map = {}
         self.str_reverse_map = {}
@@ -91,16 +106,6 @@ class EmbeddingMap:
 
     # Types
     def store_type(self, host_type, instance_type, constructor_type):
-        self._rename_type(instance_type)
-        self.type_map[host_type] = (instance_type, constructor_type)
-
-    def retrieve_type(self, host_type):
-        return self.type_map[host_type]
-
-    def has_type(self, host_type):
-        return host_type in self.type_map
-
-    def _rename_type(self, new_instance_type):
         # Generally, user-defined types that have exact same name (which is to say, classes
         # defined inside functions) do not pose a problem to the compiler. The two places which
         # cannot handle this are:
@@ -109,12 +114,29 @@ class EmbeddingMap:
         # Since handling #2 requires renaming on ARTIQ side anyway, it's more straightforward
         # to do it once when embedding (since non-embedded code cannot define classes in
         # functions). Also, easier to debug.
-        n = 0
-        for host_type in self.type_map:
-            instance_type, constructor_type = self.type_map[host_type]
-            if instance_type.name == new_instance_type.name:
-                n += 1
-                new_instance_type.name = "{}.{}".format(new_instance_type.name, n)
+        suffix = 0
+        new_instance_name = instance_type.name
+        new_constructor_name = constructor_type.name
+        while True:
+            if (new_instance_name not in self.used_instance_type_names
+                    and new_constructor_name not in self.used_constructor_type_names):
+                break
+            suffix += 1
+            new_instance_name = f"{instance_type.name}.{suffix}"
+            new_constructor_name = f"{constructor_type.name}.{suffix}"
+
+        self.used_instance_type_names.add(new_instance_name)
+        instance_type.name = new_instance_name
+        self.used_constructor_type_names.add(new_constructor_name)
+        constructor_type.name = new_constructor_name
+
+        self.type_map[host_type] = (instance_type, constructor_type)
+
+    def retrieve_type(self, host_type):
+        return self.type_map[host_type]
+
+    def has_type(self, host_type):
+        return host_type in self.type_map
 
     def attribute_count(self):
         count = 0
@@ -336,7 +358,9 @@ class ASTSynthesizer:
         elif inspect.isfunction(value) or inspect.ismethod(value) or \
                 isinstance(value, pytypes.BuiltinFunctionType) or \
                 isinstance(value, SpecializedFunction) or \
-                isinstance(value, numpy.ufunc):
+                isinstance(value, numpy.ufunc) or \
+                (isinstance(value, _ArrayFunctionDispatcher) if 
+                            _ArrayFunctionDispatcher is not None else False):
             if inspect.ismethod(value):
                 quoted_self   = self.quote(value.__self__)
                 function_type = self.quote_function(value.__func__, self.expanded_from)
@@ -541,7 +565,7 @@ class StitchingASTTypedRewriter(ASTTypedRewriter):
         node = asttyped.QuotedFunctionDefT(
             typing_env=extractor.typing_env, globals_in_scope=extractor.global_,
             signature_type=types.TVar(), return_type=types.TVar(),
-            name=node.name, args=node.args, returns=node.returns,
+            name=node.name, args=node.args, returns=None,
             body=node.body, decorator_list=node.decorator_list,
             keyword_loc=node.keyword_loc, name_loc=node.name_loc,
             arrow_loc=node.arrow_loc, colon_loc=node.colon_loc, at_locs=node.at_locs,
@@ -1048,9 +1072,6 @@ class Stitcher:
         return function_node
 
     def _extract_annot(self, function, annot, kind, call_loc, fn_kind):
-        if annot is None:
-            annot = builtins.TNone()
-
         if isinstance(function, SpecializedFunction):
             host_function = function.host_function
         else:
@@ -1064,9 +1085,20 @@ class Stitcher:
         if isinstance(embedded_function, str):
             embedded_function = host_function
 
+        return self._to_artiq_type(
+            annot,
+            function=function,
+            kind=kind,
+            eval_in_scope=lambda x: eval(x, embedded_function.__globals__),
+            call_loc=call_loc,
+            fn_kind=fn_kind)
+
+    def _to_artiq_type(
+        self, annot, *, function, kind: str, eval_in_scope, call_loc: str, fn_kind: str
+    ) -> types.Type:
         if isinstance(annot, str):
             try:
-                annot = eval(annot, embedded_function.__globals__)
+                annot = eval_in_scope(annot)
             except Exception:
                 diag = diagnostic.Diagnostic(
                     "error",
@@ -1076,17 +1108,67 @@ class Stitcher:
                     notes=self._call_site_note(call_loc, fn_kind))
                 self.engine.process(diag)
 
-        if not isinstance(annot, types.Type):
-            diag = diagnostic.Diagnostic("error",
-                "type annotation for {kind}, '{annot}', is not an ARTIQ type",
-                {"kind": kind, "annot": repr(annot)},
-                self._function_loc(function),
-                notes=self._call_site_note(call_loc, fn_kind))
-            self.engine.process(diag)
-
-            return types.TVar()
-        else:
+        if isinstance(annot, types.Type):
             return annot
+
+        # Convert built-in Python types to ARTIQ ones.
+        if annot is None:
+            return builtins.TNone()
+        elif annot is numpy.int64:
+            return builtins.TInt64()
+        elif annot is numpy.int32:
+            return builtins.TInt32()
+        elif annot is float:
+            return builtins.TFloat()
+        elif annot is bool:
+            return builtins.TBool()
+        elif annot is str:
+            return builtins.TStr()
+        elif annot is bytes:
+            return builtins.TBytes()
+        elif annot is bytearray:
+            return builtins.TByteArray()
+
+        # Convert generic Python types to ARTIQ ones.
+        generic_ty = typing.get_origin(annot)
+        if generic_ty is not None:
+            type_args = typing.get_args(annot)
+            artiq_args = [
+                self._to_artiq_type(
+                    x,
+                    function=function,
+                    kind=kind,
+                    eval_in_scope=eval_in_scope,
+                    call_loc=call_loc,
+                    fn_kind=fn_kind)
+                for x in type_args
+            ]
+
+            if generic_ty is list and len(artiq_args) == 1:
+                return builtins.TList(artiq_args[0])
+            elif generic_ty is tuple:
+                return types.TTuple(artiq_args)
+
+        # Otherwise report an unknown type and just use a fresh tyvar.
+
+        if annot is int:
+            message = (
+                "type annotation for {kind}, 'int' cannot be used as an ARTIQ type. "
+                "Use numpy's int32 or int64 instead."
+            )
+            ty = builtins.TInt()
+        else:
+            message = "type annotation for {kind}, '{annot}', is not an ARTIQ type"
+            ty = types.TVar()
+
+        diag = diagnostic.Diagnostic("error",
+            message,
+            {"kind": kind, "annot": repr(annot)},
+            self._function_loc(function),
+            notes=self._call_site_note(call_loc, fn_kind))
+        self.engine.process(diag)
+
+        return ty
 
     def _quote_syscall(self, function, loc):
         signature = inspect.signature(function)

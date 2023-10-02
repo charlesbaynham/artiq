@@ -1,6 +1,7 @@
 #![feature(lang_items, panic_info_message, const_btree_new, iter_advance_by)]
 #![no_std]
 
+extern crate dyld;
 extern crate eh;
 #[macro_use]
 extern crate alloc;
@@ -39,6 +40,8 @@ use board_artiq::drtioaux;
 use board_artiq::drtio_routing;
 use board_artiq::{mailbox, rpc_queue};
 use proto_artiq::{mgmt_proto, moninj_proto, rpc_proto, session_proto, kernel_proto};
+#[cfg(has_drtio_eem)]
+use board_artiq::drtio_eem;
 #[cfg(has_rtio_analyzer)]
 use proto_artiq::analyzer_proto;
 
@@ -125,6 +128,9 @@ fn startup() {
     }
     rtio_clocking::init();
 
+    #[cfg(has_drtio_eem)]
+    drtio_eem::init();
+
     let mut net_device = unsafe { ethmac::EthernetDevice::new() };
     net_device.reset_phy_if_any();
 
@@ -204,17 +210,15 @@ fn startup() {
     #[cfg(any(has_rtio_moninj, has_drtio))]
     {
         let aux_mutex = aux_mutex.clone();
-        let ddma_mutex = ddma_mutex.clone();
         let drtio_routing_table = drtio_routing_table.clone();
-        io.spawn(4096, move |io| { moninj::thread(io, &aux_mutex, &ddma_mutex, &drtio_routing_table) });
+        io.spawn(4096, move |io| { moninj::thread(io, &aux_mutex, &drtio_routing_table) });
     }
     #[cfg(has_rtio_analyzer)]
     {
         let aux_mutex = aux_mutex.clone();
         let drtio_routing_table = drtio_routing_table.clone();
         let up_destinations = up_destinations.clone();
-        let ddma_mutex = ddma_mutex.clone();
-        io.spawn(8192, move |io| { analyzer::thread(io, &aux_mutex, &ddma_mutex, &drtio_routing_table, &up_destinations) });
+        io.spawn(8192, move |io| { analyzer::thread(io, &aux_mutex, &drtio_routing_table, &up_destinations) });
     }
 
     #[cfg(has_grabber)]

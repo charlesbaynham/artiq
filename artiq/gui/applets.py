@@ -21,10 +21,11 @@ logger = logging.getLogger(__name__)
 
 
 class AppletIPCServer(AsyncioParentComm):
-    def __init__(self, dataset_sub, dataset_ctl):
+    def __init__(self, dataset_sub, dataset_ctl, expmgr):
         AsyncioParentComm.__init__(self)
         self.dataset_sub = dataset_sub
         self.dataset_ctl = dataset_ctl
+        self.expmgr = expmgr
         self.datasets = set()
         self.dataset_prefixes = []
 
@@ -50,6 +51,13 @@ class AppletIPCServer(AsyncioParentComm):
 
     def _on_mod(self, mod):
         if mod["action"] == "init":
+            if not (self.datasets or self.dataset_prefixes):
+                # The dataset db connection just came online, and an applet is
+                # running but did not call `subscribe` yet (e.g. because the
+                # dashboard was just restarted and a previously enabled applet
+                # is being re-opened). We will later synthesize an "init" `mod`
+                # message once the applet actually subscribes.
+                return
             mod = self._synthesize_init(mod["struct"])
         else:
             if mod["path"]:
@@ -80,9 +88,11 @@ class AppletIPCServer(AsyncioParentComm):
                                 self.dataset_sub.model.backing_store)
                             self.write_pyon({"action": "mod", "mod": mod})
                     elif action == "set_dataset":
-                        await self.dataset_ctl.set(obj["key"], obj["value"], obj["persist"])
+                        await self.dataset_ctl.set(obj["key"], obj["value"], metadata=obj["metadata"], persist=obj["persist"])
                     elif action == "update_dataset":
                         await self.dataset_ctl.update(obj["mod"])
+                    elif action == "set_argument_value":
+                        self.expmgr.set_argument_value(obj["expurl"], obj["name"], obj["value"])
                     else:
                         raise ValueError("unknown action in applet message")
                 except:
@@ -108,7 +118,7 @@ class AppletIPCServer(AsyncioParentComm):
 
 
 class _AppletDock(QDockWidgetCloseDetect):
-    def __init__(self, dataset_sub, dataset_ctl, uid, name, spec, extra_substitutes):
+    def __init__(self, dataset_sub, dataset_ctl, expmgr, uid, name, spec, extra_substitutes):
         QDockWidgetCloseDetect.__init__(self, "Applet: " + name)
         self.setObjectName("applet" + str(uid))
 
@@ -118,6 +128,7 @@ class _AppletDock(QDockWidgetCloseDetect):
 
         self.dataset_sub = dataset_sub
         self.dataset_ctl = dataset_ctl
+        self.expmgr = expmgr
         self.applet_name = name
         self.spec = spec
         self.extra_substitutes = extra_substitutes
@@ -136,7 +147,7 @@ class _AppletDock(QDockWidgetCloseDetect):
             return
         self.starting_stopping = True
         try:
-            self.ipc = AppletIPCServer(self.dataset_sub, self.dataset_ctl)
+            self.ipc = AppletIPCServer(self.dataset_sub, self.dataset_ctl, self.expmgr)
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
             env["ARTIQ_APPLET_EMBED"] = self.ipc.get_address()
@@ -333,7 +344,7 @@ class _CompleterDelegate(QtWidgets.QStyledItemDelegate):
 
 
 class AppletsDock(QtWidgets.QDockWidget):
-    def __init__(self, main_window, dataset_sub, dataset_ctl, extra_substitutes={}, *, loop=None):
+    def __init__(self, main_window, dataset_sub, dataset_ctl, expmgr, extra_substitutes={}, *, loop=None):
         """
         :param extra_substitutes: Map of extra ``${strings}`` to substitute in applet
             commands to their respective values.
@@ -346,6 +357,7 @@ class AppletsDock(QtWidgets.QDockWidget):
         self.main_window = main_window
         self.dataset_sub = dataset_sub
         self.dataset_ctl = dataset_ctl
+        self.expmgr = expmgr
         self.extra_substitutes = extra_substitutes
         self.applet_uids = set()
 
@@ -397,11 +409,12 @@ class AppletsDock(QtWidgets.QDockWidget):
         delete_action.setShortcutContext(QtCore.Qt.WidgetShortcut)
         delete_action.triggered.connect(self.delete)
         self.table.addAction(delete_action)
-        close_all_action = QtWidgets.QAction("Close all applets", self.table)
-        close_all_action.setShortcut("CTRL+ALT+W")
-        close_all_action.setShortcutContext(QtCore.Qt.ApplicationShortcut)
-        close_all_action.triggered.connect(self.close_all)
-        self.table.addAction(close_all_action)
+        close_nondocked_action = QtWidgets.QAction("Close non-docked applets", self.table)
+        close_nondocked_action.setShortcut("CTRL+ALT+W")
+        close_nondocked_action.setShortcutContext(QtCore.Qt.ApplicationShortcut)
+        close_nondocked_action.triggered.connect(self.close_nondocked)
+        self.table.addAction(close_nondocked_action)
+
         new_group_action = QtWidgets.QAction("New group", self.table)
         new_group_action.triggered.connect(partial(self.new_with_parent, self.new_group))
         self.table.addAction(new_group_action)
@@ -447,7 +460,7 @@ class AppletsDock(QtWidgets.QDockWidget):
             self.table.itemChanged.connect(self.item_changed)
 
     def create(self, item, name, spec):
-        dock = _AppletDock(self.dataset_sub, self.dataset_ctl, item.applet_uid, name, spec, self.extra_substitutes)
+        dock = _AppletDock(self.dataset_sub, self.dataset_ctl, self.expmgr, item.applet_uid, name, spec, self.extra_substitutes)
         self.main_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
         dock.setFloating(True)
         asyncio.ensure_future(dock.start(), loop=self._loop)
@@ -674,12 +687,15 @@ class AppletsDock(QtWidgets.QDockWidget):
     def restore_state(self, state):
         self.restore_state_item(state, None)
 
-    def close_all(self):
+    def close_nondocked(self):
         def walk(wi):
             for i in range(wi.childCount()):
                 cwi = wi.child(i)
                 if cwi.ty == "applet":
                     if cwi.checkState(0) == QtCore.Qt.Checked:
+                        if cwi.applet_dock is not None:
+                            if not cwi.applet_dock.isFloating():
+                                continue
                         cwi.setCheckState(0, QtCore.Qt.Unchecked)
                 elif cwi.ty == "group":
                     walk(cwi)

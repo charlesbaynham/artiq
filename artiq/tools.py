@@ -15,9 +15,11 @@ from sipyco import pyon
 from artiq import __version__ as artiq_version
 from artiq.appdirs import user_config_dir
 from artiq.language.environment import is_public_experiment
+from artiq.language import units
 
 
-__all__ = ["parse_arguments", "elide", "short_format", "file_import",
+__all__ = ["parse_arguments", "elide", "scale_from_metadata", 
+           "short_format", "file_import",
            "get_experiment",
            "exc_to_warning", "asyncio_wait_or_cancel",
            "get_windows_drives", "get_user_config_dir"]
@@ -53,21 +55,45 @@ def elide(s, maxlen):
         s += "..."
     return s
 
+def scale_from_metadata(metadata):
+    unit = metadata.get("unit", "")
+    default_scale = getattr(units, unit, 1)
+    return metadata.get("scale", default_scale)  
 
-def short_format(v):
+def short_format(v, metadata={}):
+    m = metadata
+    unit = m.get("unit", "")
+    scale = scale_from_metadata(m)
+    precision = m.get("precision", None)
     if v is None:
         return "None"
     t = type(v)
-    if np.issubdtype(t, np.number) or np.issubdtype(t, np.bool_):
-        return str(v)
+    if np.issubdtype(t, np.number):
+        v_t = np.divide(v, scale)
+        v_str = np.format_float_positional(v_t, 
+                                           precision=precision,
+                                           trim='-',
+                                           unique=True)
+        v_str += " " + unit if unit else ""
+        return v_str
+    elif np.issubdtype(t, np.bool_):
+       return str(v)
     elif np.issubdtype(t, np.unicode_):
         return "\"" + elide(v, 50) + "\""
-    else:
-        r = t.__name__
-        if t is list or t is dict or t is set:
-            r += " ({})".format(len(v))
-        if t is np.ndarray:
-            r += " " + str(np.shape(v))
+    elif t is np.ndarray:
+        v_t = np.divide(v, scale)
+        v_str = np.array2string(v_t,
+                                max_line_width=1000,
+                                precision=precision,
+                                suppress_small=True,
+                                separator=', ',
+                                threshold=4,
+                                edgeitems=2,
+                                floatmode='maxprec')
+        v_str += " " + unit if unit else ""
+        return v_str
+    elif isinstance(v, (dict, list)):
+        r = t.__name__ + " ({})".format(len(v))
         return r
 
 

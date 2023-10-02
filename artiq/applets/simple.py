@@ -11,6 +11,8 @@ from sipyco.pc_rpc import AsyncioClient as RPCClient
 from sipyco import pyon
 from sipyco.pipe_ipc import AsyncioChildComm
 
+from artiq.language.scan import ScanObject
+
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +21,15 @@ class AppletControlIPC:
     def __init__(self, ipc):
         self.ipc = ipc
 
-    def set_dataset(self, key, value, persist=None):
-        self.ipc.set_dataset(key, value, persist)
+    def set_dataset(self, key, value, unit=None, scale=None, precision=None, persist=None):
+        metadata = {}
+        if unit is not None:
+            metadata["unit"] = unit
+        if scale is not None:
+            metadata["scale"] = scale
+        if precision is not None:
+            metadata["precision"] = precision
+        self.ipc.set_dataset(key, value, metadata, persist)
 
     def mutate_dataset(self, key, index, value):
         mod = {"action": "setitem", "path": [key, 1], "key": index, "value": value}
@@ -29,6 +38,11 @@ class AppletControlIPC:
     def append_to_dataset(self, key, value):
         mod = {"action": "append", "path": [key, 1], "x": value}
         self.ipc.update_dataset(mod)
+
+    def set_argument_value(self, expurl, name, value):
+        if isinstance(value, ScanObject):
+            value = value.describe()
+        self.ipc.set_argument_value(expurl, name, value)
 
 
 class AppletControlRPC:
@@ -37,13 +51,20 @@ class AppletControlRPC:
         self.dataset_ctl = dataset_ctl
         self.background_tasks = set()
 
-    def _background(self, coro, *args):
-        task = self.loop.create_task(coro(*args))
+    def _background(self, coro, *args, **kwargs):
+        task = self.loop.create_task(coro(*args, **kwargs))
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
 
-    def set_dataset(self, key, value, persist=None):
-        self._background(self.dataset_ctl.set, key, value, persist)
+    def set_dataset(self, key, value, unit=None, scale=None, precision=None, persist=None):
+        metadata = {}
+        if unit is not None:
+            metadata["unit"] = unit
+        if scale is not None:
+            metadata["scale"] = scale
+        if precision is not None:
+            metadata["precision"] = precision
+        self._background(self.dataset_ctl.set, key, value, metadata=metadata, persist=persist)
 
     def mutate_dataset(self, key, index, value):
         mod = {"action": "setitem", "path": [key, 1], "key": index, "value": value}
@@ -53,6 +74,8 @@ class AppletControlRPC:
         mod = {"action": "append", "path": [key, 1], "x": value}
         self._background(self.dataset_ctl.update, mod)
 
+    def set_argument_value(self, expurl, name, value):
+        raise NotImplementedError
 
 class AppletIPCClient(AsyncioChildComm):
     def set_close_cb(self, close_cb):
@@ -112,15 +135,22 @@ class AppletIPCClient(AsyncioChildComm):
         self.mod_cb = mod_cb
         self.listen_task = loop.create_task(self.listen())
 
-    def set_dataset(self, key, value, persist=None):
+    def set_dataset(self, key, value, metadata, persist=None):
         self.write_pyon({"action": "set_dataset",
                          "key": key,
                          "value": value,
+                         "metadata": metadata,
                          "persist": persist})
 
     def update_dataset(self, mod):
         self.write_pyon({"action": "update_dataset",
                          "mod": mod})
+
+    def set_argument_value(self, expurl, name, value):
+        self.write_pyon({"action": "set_argument_value",
+                         "expurl": expurl,
+                         "name": name,
+                         "value": value})
 
 
 class SimpleApplet:
@@ -255,7 +285,12 @@ class SimpleApplet:
             return False
 
     def emit_data_changed(self, data, mod_buffer):
-        self.main_widget.data_changed(data, mod_buffer)
+        persist = dict()
+        value = dict()
+        metadata = dict()
+        for k, d in data.items():
+            persist[k], value[k], metadata[k] = d
+        self.main_widget.data_changed(value, metadata, persist, mod_buffer)
 
     def flush_mod_buffer(self):
         self.emit_data_changed(self.data, self.mod_buffer)
@@ -344,4 +379,9 @@ class TitleApplet(SimpleApplet):
                 title = self.args.title
         else:
             title = None
-        self.main_widget.data_changed(data, mod_buffer, title)
+        persist = dict()
+        value = dict()
+        metadata = dict()
+        for k, d in data.items():
+            persist[k], value[k], metadata[k] = d
+        self.main_widget.data_changed(value, metadata, persist, mod_buffer, title)

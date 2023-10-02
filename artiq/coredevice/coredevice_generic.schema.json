@@ -130,7 +130,7 @@
                 },
                 "hw_rev": {
                     "type": "string",
-                    "enum": ["v1.0"]
+                    "enum": ["v1.0", "v1.1"]
                 }
             }
         }
@@ -142,7 +142,7 @@
             "properties": {
                 "type": {
                     "type": "string",
-                    "enum": ["dio", "dio_spi", "urukul", "novogorny", "sampler", "suservo", "zotino", "grabber", "mirny", "fastino", "phaser", "hvamp"]
+                    "enum": ["dio", "dio_spi", "urukul", "novogorny", "sampler", "suservo", "zotino", "grabber", "mirny", "fastino", "phaser", "hvamp", "shuttler"]
                 },
                 "board": {
                     "type": "string"
@@ -308,7 +308,8 @@
                         "clk_div": {
                             "type": "integer",
                             "minimum": 0,
-                            "maximum": 3
+                            "maximum": 3,
+                            "default": 0
                         },
                         "pll_n": {
                             "type": "integer"
@@ -605,6 +606,32 @@
                             },
                             "minItems": 1,
                             "maxItems": 1
+                        }
+                    },
+                    "required": ["ports"]
+                }
+            },{
+                "title": "Shuttler",
+                "if": {
+                    "properties": {
+                        "type": {
+                            "const": "shuttler"
+                        }
+                    }
+                },
+                "then": {
+                    "properties": {
+                        "ports": {
+                            "type": "array",
+                            "items": {
+                                "type": "integer"
+                            },
+                            "minItems": 1,
+                            "maxItems": 2
+                        },
+                        "drtio_destination": {
+                            "type": "integer",
+                            "default": 4
                         }
                     },
                     "required": ["ports"]

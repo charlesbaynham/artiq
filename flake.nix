@@ -91,6 +91,10 @@
           sha256 = "1y27vz6jq6sywas07kz3v01sqjd0sga9yv9w2cksqac3v7wmf2a0";
         };
         prePatch = "echo ${version} > RELEASE-VERSION";
+        postPatch = ''
+          substituteInPlace OutputCheck/Driver.py \
+            --replace "argparse.FileType('rU')" "argparse.FileType('r')"
+        '';
       };
 
       libartiq-support = pkgs.stdenv.mkDerivation {
@@ -111,6 +115,28 @@
         '';
       };
 
+      llvmlite-new = pkgs.python3Packages.buildPythonPackage rec {
+        pname = "llvmlite";
+        version = "0.40.1";
+        src = pkgs.fetchFromGitHub {
+          owner = "numba";
+          repo = "llvmlite";
+          rev = "v${version}";
+          sha256 = "sha256-gPEda9cMEsruvBt8I2VFfsTKZaPsNDgqx2Y9n0MSc4Y=";
+        };
+        nativeBuildInputs = [ pkgs.llvm_14 ];
+        # Disable static linking
+        # https://github.com/numba/llvmlite/issues/93
+        postPatch = ''
+          substituteInPlace ffi/Makefile.linux --replace "-static-libstdc++" ""
+          substituteInPlace llvmlite/tests/test_binding.py --replace "test_linux" "nope"
+        '';
+        # Set directory containing llvm-config binary
+        preConfigure = ''
+          export LLVM_CONFIG=${pkgs.llvm_14.dev}/bin/llvm-config
+        '';
+      };
+
       artiq-upstream = pkgs.python3Packages.buildPythonPackage rec {
         pname = "artiq";
         version = artiqVersion;
@@ -124,8 +150,8 @@
 
         nativeBuildInputs = [ pkgs.qt5.wrapQtAppsHook ];
         # keep llvm_x and lld_x in sync with llvmlite
-        propagatedBuildInputs = [ pkgs.llvm_11 pkgs.lld_11 sipyco.packages.x86_64-linux.sipyco pythonparser pkgs.qt5.qtsvg artiq-comtools.packages.x86_64-linux.artiq-comtools ]
-          ++ (with pkgs.python3Packages; [ llvmlite pyqtgraph pygit2 numpy dateutil scipy prettytable pyserial levenshtein h5py pyqt5 qasync tqdm lmdb jsonschema ]);
+        propagatedBuildInputs = [ pkgs.llvm_14 pkgs.lld_14 sipyco.packages.x86_64-linux.sipyco pythonparser llvmlite-new pkgs.qt5.qtsvg artiq-comtools.packages.x86_64-linux.artiq-comtools ]
+          ++ (with pkgs.python3Packages; [ pyqtgraph pygit2 numpy dateutil scipy prettytable pyserial levenshtein h5py pyqt5 qasync tqdm lmdb jsonschema ]);
 
         dontWrapQtApps = true;
         postFixup = ''
@@ -136,9 +162,9 @@
 
         preFixup =
           ''
-          # Ensure that wrapProgram uses makeShellWrapper rather than makeBinaryWrapper
-          # brought in by wrapQtAppsHook. Only makeShellWrapper supports --run.
-          wrapProgram() { wrapProgramShell "$@"; }
+            # Ensure that wrapProgram uses makeShellWrapper rather than makeBinaryWrapper
+            # brought in by wrapQtAppsHook. Only makeShellWrapper supports --run.
+            wrapProgram() { wrapProgramShell "$@"; }
           '';
         ## Modifies PATH to pass the wrapped python environment (i.e. python3.withPackages(...) to subprocesses.
         ## Allows subprocesses using python to find all packages you have installed
@@ -147,10 +173,10 @@
           "--set FONTCONFIG_FILE ${pkgs.fontconfig.out}/etc/fonts/fonts.conf"
         ];
 
-        # FIXME: automatically propagate lld_11 llvm_11 dependencies
+        # FIXME: automatically propagate lld_14 llvm_14 dependencies
         # cacert is required in the check stage only, as certificates are to be
         # obtained from system elsewhere
-        nativeCheckInputs = [ pkgs.lld_11 pkgs.llvm_11 libartiq-support pkgs.lit outputcheck pkgs.cacert ];
+        nativeCheckInputs = [ pkgs.lld_14 pkgs.llvm_14 libartiq-support pkgs.lit outputcheck pkgs.cacert ];
         checkPhase = ''
           python -m unittest discover -v artiq.test
 
@@ -168,6 +194,8 @@
       migen = pkgs.python3Packages.buildPythonPackage rec {
         name = "migen";
         src = src-migen;
+        format = "pyproject";
+        nativeBuildInputs = [ pkgs.python3Packages.setuptools ];
         propagatedBuildInputs = [ pkgs.python3Packages.colorama ];
       };
 
@@ -224,12 +252,12 @@
             };
           };
           nativeBuildInputs = [
-            (pkgs.python3.withPackages(ps: [ migen misoc (artiq.withExperimentalFeatures experimentalFeatures) ps.packaging ]))
+            (pkgs.python3.withPackages (ps: [ migen misoc (artiq.withExperimentalFeatures experimentalFeatures) ps.packaging ]))
             rust
             pkgs.cargo-xbuild
-            pkgs.llvmPackages_11.clang-unwrapped
-            pkgs.llvm_11
-            pkgs.lld_11
+            pkgs.llvmPackages_14.clang-unwrapped
+            pkgs.llvm_14
+            pkgs.lld_14
             vivado
             rustPlatform.cargoSetupHook
           ];
@@ -253,16 +281,20 @@
             '';
           installPhase =
             ''
-              TARGET_DIR=$out
-              mkdir -p $TARGET_DIR
-              cp artiq_${target}/${variant}/gateware/top.bit $TARGET_DIR
+              mkdir $out
+              cp artiq_${target}/${variant}/gateware/top.bit $out
               if [ -e artiq_${target}/${variant}/software/bootloader/bootloader.bin ]
-              then cp artiq_${target}/${variant}/software/bootloader/bootloader.bin $TARGET_DIR
+              then cp artiq_${target}/${variant}/software/bootloader/bootloader.bin $out
               fi
               if [ -e artiq_${target}/${variant}/software/runtime ]
-              then cp artiq_${target}/${variant}/software/runtime/runtime.{elf,fbi} $TARGET_DIR
-              else cp artiq_${target}/${variant}/software/satman/satman.{elf,fbi} $TARGET_DIR
+              then cp artiq_${target}/${variant}/software/runtime/runtime.{elf,fbi} $out
+              else cp artiq_${target}/${variant}/software/satman/satman.{elf,fbi} $out
               fi
+
+              mkdir $out/nix-support
+              for i in $out/*.*; do
+              echo file binary-dist $i >> $out/nix-support/hydra-build-products
+              done
             '';
           # don't mangle ELF files as they are not for NixOS
           dontFixup = true;
@@ -335,6 +367,10 @@
           target = "kc705";
           variant = "nist_clock";
         };
+        artiq-board-efc-shuttler = makeArtiqBoardPackage {
+          target = "efc";
+          variant = "shuttler";
+        };
         inherit sphinxcontrib-wavedrom latex-artiq-manual;
         artiq-manual-html = pkgs.stdenvNoCC.mkDerivation rec {
           name = "artiq-manual-html-${version}";
@@ -394,12 +430,12 @@
       devShells.x86_64-linux.default = pkgs.mkShell {
         name = "artiq-dev-shell";
         buildInputs = [
-          (pkgs.python3.withPackages(ps: with packages.x86_64-linux; [ migen misoc ps.paramiko microscope ps.packaging ] ++ artiq.propagatedBuildInputs ))
+          (pkgs.python3.withPackages (ps: with packages.x86_64-linux; [ migen misoc ps.paramiko microscope ps.packaging ] ++ artiq.propagatedBuildInputs))
           rust
           pkgs.cargo-xbuild
-          pkgs.llvmPackages_11.clang-unwrapped
-          pkgs.llvm_11
-          pkgs.lld_11
+          pkgs.llvmPackages_14.clang-unwrapped
+          pkgs.llvm_14
+          pkgs.lld_14
           # To manually run compiler tests:
           pkgs.lit
           outputcheck
@@ -425,12 +461,12 @@
       devShells.x86_64-linux.boards = pkgs.mkShell {
         name = "artiq-boards-shell";
         buildInputs = [
-          (pkgs.python3.withPackages(ps: with packages.x86_64-linux; [ migen misoc artiq ps.packaging ]))
+          (pkgs.python3.withPackages (ps: with packages.x86_64-linux; [ migen misoc artiq ps.packaging ]))
           rust
           pkgs.cargo-xbuild
-          pkgs.llvmPackages_11.clang-unwrapped
-          pkgs.llvm_11
-          pkgs.lld_11
+          pkgs.llvmPackages_14.clang-unwrapped
+          pkgs.llvm_14
+          pkgs.lld_14
           packages.x86_64-linux.vivado
           packages.x86_64-linux.openocd-bscanspi
         ];
@@ -441,17 +477,17 @@
       };
 
       hydraJobs = {
-        inherit (packages.x86_64-linux) artiq artiq-board-kc705-nist_clock openocd-bscanspi;
+        inherit (packages.x86_64-linux) artiq artiq-board-kc705-nist_clock artiq-board-efc-shuttler openocd-bscanspi;
         gateware-sim = pkgs.stdenvNoCC.mkDerivation {
           name = "gateware-sim";
           buildInputs = [
-            (pkgs.python3.withPackages(ps: with packages.x86_64-linux; [ migen misoc artiq ]))
+            (pkgs.python3.withPackages (ps: with packages.x86_64-linux; [ migen misoc artiq ]))
           ];
           phases = [ "buildPhase" ];
           buildPhase =
             ''
-            python -m unittest discover -v artiq.gateware.test
-            touch $out
+              python -m unittest discover -v artiq.gateware.test
+              touch $out
             '';
         };
         kc705-hitl = pkgs.stdenvNoCC.mkDerivation {
@@ -463,22 +499,22 @@
 
           buildInputs = [
             (pkgs.python3.withPackages (ps: with packages.x86_64-linux; [ artiq ps.paramiko ]))
-            pkgs.llvm_11
-            pkgs.lld_11
+            pkgs.llvm_14
+            pkgs.lld_14
             pkgs.openssh
             packages.x86_64-linux.openocd-bscanspi # for the bscanspi bitstreams
           ];
           phases = [ "buildPhase" ];
           buildPhase =
             ''
-            export HOME=`mktemp -d`
-            mkdir $HOME/.ssh
-            cp /opt/hydra_id_ed25519 $HOME/.ssh/id_ed25519
-            cp /opt/hydra_id_ed25519.pub $HOME/.ssh/id_ed25519.pub
-            echo "rpi-1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIACtBFDVBYoAE4fpJCTANZSE0bcVpTR3uvfNvb80C4i5" > $HOME/.ssh/known_hosts
-            chmod 600 $HOME/.ssh/id_ed25519
-            LOCKCTL=$(mktemp -d)
-            mkfifo $LOCKCTL/lockctl
+              export HOME=`mktemp -d`
+              mkdir $HOME/.ssh
+              cp /opt/hydra_id_ed25519 $HOME/.ssh/id_ed25519
+              cp /opt/hydra_id_ed25519.pub $HOME/.ssh/id_ed25519.pub
+              echo "rpi-1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIACtBFDVBYoAE4fpJCTANZSE0bcVpTR3uvfNvb80C4i5" > $HOME/.ssh/known_hosts
+              chmod 600 $HOME/.ssh/id_ed25519
+              LOCKCTL=$(mktemp -d)
+              mkfifo $LOCKCTL/lockctl
 
               cat $LOCKCTL/lockctl | ${pkgs.openssh}/bin/ssh \
                 -i $HOME/.ssh/id_ed25519 \
@@ -495,8 +531,8 @@
                 # Read "Ok" line when remote successfully locked
                 read LOCK_OK
 
-              artiq_flash -t kc705 -H rpi-1 -d ${packages.x86_64-linux.artiq-board-kc705-nist_clock}
-              sleep 30
+                artiq_flash -t kc705 -H rpi-1 -d ${packages.x86_64-linux.artiq-board-kc705-nist_clock}
+                sleep 30
 
                 export ARTIQ_ROOT=`python -c "import artiq; print(artiq.__path__[0])"`/examples/kc705_nist_clock
                 export ARTIQ_LOW_LATENCY=1
