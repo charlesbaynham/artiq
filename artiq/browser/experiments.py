@@ -10,20 +10,12 @@ import h5py
 from sipyco import pyon
 
 from artiq import __artiq_dir__ as artiq_dir
-from artiq.gui.tools import LayoutWidget, log_level_to_name, get_open_file_name
+from artiq.gui.tools import (LayoutWidget, WheelFilter, 
+                             log_level_to_name, get_open_file_name)
 from artiq.gui.entries import procdesc_to_entry
 from artiq.master.worker import Worker, log_worker_exception
 
 logger = logging.getLogger(__name__)
-
-
-class _WheelFilter(QtCore.QObject):
-    def eventFilter(self, obj, event):
-        if (event.type() == QtCore.QEvent.Wheel and
-                event.modifiers() != QtCore.Qt.NoModifier):
-            event.ignore()
-            return True
-        return False
 
 
 class _ArgumentEditor(QtWidgets.QTreeWidget):
@@ -46,7 +38,7 @@ class _ArgumentEditor(QtWidgets.QTreeWidget):
         self.setStyleSheet("QTreeWidget {background: " +
                            self.palette().midlight().color().name() + " ;}")
 
-        self.viewport().installEventFilter(_WheelFilter(self.viewport()))
+        self.viewport().installEventFilter(WheelFilter(self.viewport(), True))
 
         self._groups = dict()
         self._arg_to_widgets = dict()
@@ -515,6 +507,10 @@ class ExperimentsArea(QtWidgets.QMdiArea):
         dock.sigClosed.connect(partial(self.on_dock_closed, dock))
         self.open_experiments.append(dock)
         return dock
+
+    def set_argument_value(self, expurl, name, value):
+        logger.warning("Unable to set argument '%s', dropping change. "
+                       "'set_argument_value' not supported in browser.", name)
 
     def on_dock_closed(self, dock):
         self.open_experiments.remove(dock)

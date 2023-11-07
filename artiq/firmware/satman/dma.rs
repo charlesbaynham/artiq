@@ -1,5 +1,7 @@
 use board_misoc::{csr, cache::flush_l2_cache};
+use proto_artiq::drtioaux_proto::PayloadStatus;
 use alloc::{vec::Vec, collections::btree_map::BTreeMap};
+use ::{cricon_select, RtioMaster};
 
 const ALIGNMENT: usize = 64;
 
@@ -50,7 +52,10 @@ impl Manager {
         }
     }
 
-    pub fn add(&mut self, id: u32, last: bool, trace: &[u8], trace_len: usize) -> Result<(), Error> {
+    pub fn add(&mut self, id: u32, status: PayloadStatus, trace: &[u8], trace_len: usize) -> Result<(), Error> {
+        if status.is_first() {
+            self.entries.remove(&id);
+        }
         let entry = match self.entries.get_mut(&id) {
             Some(entry) => {
                 if entry.complete {
@@ -75,7 +80,7 @@ impl Manager {
         };
         entry.trace.extend(&trace[0..trace_len]);
 
-        if last {
+        if status.is_last() {
             entry.trace.push(0);
             let data_len = entry.trace.len();
     
@@ -126,14 +131,14 @@ impl Manager {
             csr::rtio_dma::base_address_write(ptr as u64);
             csr::rtio_dma::time_offset_write(timestamp as u64);
     
-            csr::cri_con::selected_write(1);
+            cricon_select(RtioMaster::Dma);
             csr::rtio_dma::enable_write(1);
             // playback has begun here, for status call check_state
         }
         Ok(())
     }
 
-    pub fn check_state(&mut self) -> Option<RtioStatus> {
+    pub fn get_status(&mut self) -> Option<RtioStatus> {
         if self.state != ManagerState::Playback {
             // nothing to report
             return None;
@@ -141,12 +146,11 @@ impl Manager {
         let dma_enable = unsafe { csr::rtio_dma::enable_read() };
         if dma_enable != 0 {
             return None;
-        }
-        else {
+        } else {
             self.state = ManagerState::Idle;
             unsafe { 
-                csr::cri_con::selected_write(0);
-                let error =  csr::rtio_dma::error_read();
+                cricon_select(RtioMaster::Drtio);
+                let error = csr::rtio_dma::error_read();
                 let channel = csr::rtio_dma::error_channel_read();
                 let timestamp = csr::rtio_dma::error_timestamp_read();
                 if error != 0 {
@@ -159,6 +163,10 @@ impl Manager {
                     timestamp: timestamp });
             }
         }
+    }
+
+    pub fn running(&self) -> bool {
+        self.state == ManagerState::Playback
     }
 
 }

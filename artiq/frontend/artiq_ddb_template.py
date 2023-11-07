@@ -34,7 +34,7 @@ def process_header(output, description):
                 "type": "local",
                 "module": "artiq.coredevice.core",
                 "class": "Core",
-                "arguments": {{"host": core_addr, "ref_period": {ref_period}, "target": "{cpu_target}"}},
+                "arguments": {{"host": core_addr, "ref_period": {ref_period}, "target": "{cpu_target}", "satellite_cpu_targets": {{}} }},
             }},
             "core_log": {{
                 "type": "controller",
@@ -59,8 +59,6 @@ def process_header(output, description):
                 "module": "artiq.coredevice.dma",
                 "class": "CoreDMA"
             }},
-
-            "satellite_cpu_targets": {{}},
 
             "i2c_switch0": {{
                 "type": "local",
@@ -652,10 +650,10 @@ class PeripheralManager:
             channel=rtio_offset + next(channel))
         for i in range(16):
             self.gen("""
-                device_db["{name}_volt{ch}"] = {{
+                device_db["{name}_dcbias{ch}"] = {{
                     "type": "local",
                     "module": "artiq.coredevice.shuttler",
-                    "class": "Volt",
+                    "class": "DCBias",
                     "arguments": {{"channel": 0x{channel:06x}}},
                 }}""",
                 name=shuttler_name,
@@ -665,7 +663,7 @@ class PeripheralManager:
                 device_db["{name}_dds{ch}"] = {{
                     "type": "local",
                     "module": "artiq.coredevice.shuttler",
-                    "class": "Dds",
+                    "class": "DDS",
                     "arguments": {{"channel": 0x{channel:06x}}},
                 }}""",
                 name=shuttler_name,
@@ -757,16 +755,36 @@ def process(output, primary_description, satellites):
         peripherals, satellite_drtio_peripherals = split_drtio_eem(description["peripherals"])
         drtio_peripherals.extend(satellite_drtio_peripherals)
 
-        print("# DEST#{} peripherals".format(destination), file=output)
-        print("device_db[\"satellite_cpu_targets\"][{}] = \"{}\"".format(destination, get_cpu_target(description)), file=output)
+        print(textwrap.dedent("""
+            # DEST#{dest} peripherals
+
+            device_db["core"]["arguments"]["satellite_cpu_targets"][{dest}] = \"{target}\"""").format(
+                dest=destination,
+                target=get_cpu_target(description)),
+            file=output)
         rtio_offset = destination << 16
         for peripheral in peripherals:
             n_channels = pm.process(rtio_offset, peripheral)
             rtio_offset += n_channels
     
-    for peripheral in drtio_peripherals:
-        print("# DEST#{} peripherals".format(peripheral["drtio_destination"]), file=output)
-        print("device_db[\"satellite_cpu_targets\"][{}] = \"{}\"".format(peripheral["drtio_destination"], get_cpu_target(peripheral)), file=output)
+    for i, peripheral in enumerate(drtio_peripherals):
+        if not("drtio_destination" in peripheral):
+            if primary_description["target"] == "kasli":
+                if primary_description["hw_rev"] in ("v1.0", "v1.1"):
+                    peripheral["drtio_destination"] = 3 + i
+                else:
+                    peripheral["drtio_destination"] = 4 + i
+            elif primary_description["target"] == "kasli_soc":
+                peripheral["drtio_destination"] = 5 + i
+            else:
+                raise NotImplementedError
+        print(textwrap.dedent("""
+            # DEST#{dest} peripherals
+
+            device_db["core"]["arguments"]["satellite_cpu_targets"][{dest}] = \"{target}\"""").format(
+                dest=peripheral["drtio_destination"],
+                target=get_cpu_target(peripheral)),
+            file=output)
         processor = getattr(pm, "process_"+str(peripheral["type"]))
         processor(peripheral)
 
