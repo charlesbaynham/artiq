@@ -1,7 +1,7 @@
 {
   description = "A leading-edge control system for quantum information experiments";
 
-  inputs.nixpkgs.url = github:NixOS/nixpkgs/nixos-23.05;
+  inputs.nixpkgs.url = github:NixOS/nixpkgs/nixos-23.11;
   inputs.mozilla-overlay = { url = github:mozilla/nixpkgs-mozilla; flake = false; };
   inputs.sipyco.url = github:m-labs/sipyco;
   inputs.sipyco.inputs.nixpkgs.follows = "nixpkgs";
@@ -43,9 +43,20 @@
         cargo = rust;
       });
 
-      vivadoDeps = pkgs: with pkgs; [
+      cargo-xbuild = pkgs.cargo-xbuild.overrideAttrs(oa: {
+        postPatch = "substituteInPlace src/sysroot.rs --replace 2021 2018";
+      });
+
+      vivadoDeps = pkgs: with pkgs; let
+        # Apply patch from https://github.com/nix-community/nix-environments/pull/54
+        # to fix ncurses libtinfo.so's soname issue
+        ncurses' = ncurses5.overrideAttrs (old: {
+          configureFlags = old.configureFlags ++ [ "--with-termlib" ];
+          postFixup = "";
+        });
+      in [
         libxcrypt-legacy
-        ncurses5
+        (ncurses'.override { unicodeSupport = false; })
         zlib
         libuuid
         xorg.libSM
@@ -254,12 +265,13 @@
             lockFile = ./artiq/firmware/Cargo.lock;
             outputHashes = {
               "fringe-1.2.1" = "sha256-m4rzttWXRlwx53LWYpaKuU5AZe4GSkbjHS6oINt5d3Y=";
+              "tar-no-std-0.1.8" = "sha256-xm17108v4smXOqxdLvHl9CxTCJslmeogjm4Y87IXFuM=";
             };
           };
           nativeBuildInputs = [
             (pkgs.python3.withPackages (ps: [ migen misoc (artiq.withExperimentalFeatures experimentalFeatures) ps.packaging ]))
             rust
-            pkgs.cargo-xbuild
+            cargo-xbuild
             pkgs.llvmPackages_14.clang-unwrapped
             pkgs.llvm_14
             pkgs.lld_14
@@ -361,7 +373,7 @@
         inherit (pkgs.texlive)
           scheme-basic latexmk cmap collection-fontsrecommended fncychap
           titlesec tabulary varwidth framed fancyvrb float wrapfig parskip
-          upquote capt-of needspace etoolbox;
+          upquote capt-of needspace etoolbox booktabs;
       };
     in
     rec {
@@ -438,7 +450,7 @@
         buildInputs = [
           (pkgs.python3.withPackages (ps: with packages.x86_64-linux; [ migen misoc ps.paramiko microscope ps.packaging ] ++ artiq.propagatedBuildInputs))
           rust
-          pkgs.cargo-xbuild
+          cargo-xbuild
           pkgs.llvmPackages_14.clang-unwrapped
           pkgs.llvm_14
           pkgs.lld_14
@@ -469,7 +481,7 @@
         buildInputs = [
           (pkgs.python3.withPackages (ps: with packages.x86_64-linux; [ migen misoc artiq ps.packaging ]))
           rust
-          pkgs.cargo-xbuild
+          cargo-xbuild
           pkgs.llvmPackages_14.clang-unwrapped
           pkgs.llvm_14
           pkgs.lld_14
