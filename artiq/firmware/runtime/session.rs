@@ -471,6 +471,7 @@ fn process_host_message(io: &Io, _aux_mutex: &Mutex, _ddma_mutex: &Mutex, _subke
                 match subkernel::upload(io, _aux_mutex, _subkernel_mutex, _routing_table, _id) {
                     Ok(_) => host_write(stream, host::Reply::LoadCompleted)?,
                     Err(error) => {
+                        subkernel::clear_subkernels(io, _subkernel_mutex)?;
                         let mut description = String::new();
                         write!(&mut description, "{}", error).unwrap();
                         host_write(stream, host::Reply::LoadFailed(&description))?
@@ -631,6 +632,8 @@ fn process_kern_message(io: &Io, aux_mutex: &Mutex,
                 unsafe { kernel::stop() }
                 session.kernel_state = KernelState::Absent;
                 unsafe { session.congress.cache.unborrow() }
+                #[cfg(has_drtio)]
+                subkernel::clear_subkernels(io, _subkernel_mutex)?;
 
                 match stream {
                     None => return Ok(true),
@@ -648,6 +651,8 @@ fn process_kern_message(io: &Io, aux_mutex: &Mutex,
                 unsafe { kernel::stop() }
                 session.kernel_state = KernelState::Absent;
                 unsafe { session.congress.cache.unborrow() }
+                #[cfg(has_drtio)]
+                subkernel::clear_subkernels(io, _subkernel_mutex)?;
 
                 match stream {
                     None => {
@@ -668,7 +673,7 @@ fn process_kern_message(io: &Io, aux_mutex: &Mutex,
                 }
             }
             #[cfg(has_drtio)]
-            &kern::SubkernelLoadRunRequest { id, run } => {
+            &kern::SubkernelLoadRunRequest { id, destination: _, run } => {
                 let succeeded = match subkernel::load(
                     io, aux_mutex, _subkernel_mutex, routing_table, id, run) {
                         Ok(()) => true,
@@ -699,7 +704,7 @@ fn process_kern_message(io: &Io, aux_mutex: &Mutex,
                 kern_send(io, &kern::SubkernelAwaitFinishReply { status: status })
             }
             #[cfg(has_drtio)]
-            &kern::SubkernelMsgSend { id, count, tag, data } => {
+            &kern::SubkernelMsgSend { id, destination: _, count, tag, data } => {
                 subkernel::message_send(io, aux_mutex, _subkernel_mutex, routing_table, id, count, tag, data)?;
                 kern_acknowledge()
             }

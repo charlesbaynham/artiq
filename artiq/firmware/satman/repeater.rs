@@ -1,6 +1,7 @@
 use board_artiq::{drtioaux, drtio_routing};
 #[cfg(has_drtio_routing)]
 use board_misoc::{csr, clock};
+use routing::Router;
 
 #[cfg(has_drtio_routing)]
 fn rep_link_rx_up(repno: u8) -> bool {
@@ -48,7 +49,7 @@ impl Repeater {
         self.state == RepeaterState::Up
     }
 
-    pub fn service(&mut self, routing_table: &drtio_routing::RoutingTable, rank: u8) {
+    pub fn service(&mut self, routing_table: &drtio_routing::RoutingTable, rank: u8, destination: u8, router: &mut Router) {
         self.process_local_errors();
 
         match self.state {
@@ -110,6 +111,11 @@ impl Repeater {
                 if !rep_link_rx_up(self.repno) {
                     info!("[REP#{}] link is down", self.repno);
                     self.state = RepeaterState::Down;
+                }
+                if self.async_messages_ready() {
+                    if let Err(e) = self.handle_async(routing_table, rank, destination, router) {
+                        warn!("[REP#{}] Error handling async messages ({})", self.repno, e);
+                    }
                 }
             }
             RepeaterState::Failed => {
@@ -179,14 +185,40 @@ impl Repeater {
         }
     }
 
-    pub fn aux_forward(&self, request: &drtioaux::Packet) -> Result<(), drtioaux::Error<!>> {
-        if self.state != RepeaterState::Up {
-            return Err(drtioaux::Error::LinkDown);
+    fn async_messages_ready(&self) -> bool {
+        let async_rdy;
+        unsafe { 
+            async_rdy = (csr::DRTIOREP[self.repno as usize].async_messages_ready_read)();
+            (csr::DRTIOREP[self.repno as usize].async_messages_ready_write)(0);
         }
-        drtioaux::send(self.auxno, request).unwrap();
+        async_rdy == 1
+    }
+
+    fn handle_async(&self, routing_table: &drtio_routing::RoutingTable, rank: u8, self_destination: u8, router: &mut Router
+    ) -> Result<(), drtioaux::Error<!>> {
+        loop {
+            drtioaux::send(self.auxno, &drtioaux::Packet::RoutingRetrievePackets).unwrap();
+            let reply = self.recv_aux_timeout(200)?;
+            match reply {
+                drtioaux::Packet::RoutingNoPackets => break,
+                packet => router.route(packet, routing_table, rank, self_destination)
+            }
+        }
+        Ok(())
+    }
+
+    pub fn aux_forward(&self, request: &drtioaux::Packet) -> Result<(), drtioaux::Error<!>> {
+        self.aux_send(request)?;
         let reply = self.recv_aux_timeout(200)?;
         drtioaux::send(0, &reply).unwrap();
         Ok(())
+    }
+
+    pub fn aux_send(&self, request: &drtioaux::Packet) -> Result<(), drtioaux::Error<!>> {
+        if self.state != RepeaterState::Up {
+            return Err(drtioaux::Error::LinkDown);
+        }
+        drtioaux::send(self.auxno, request)
     }
 
     pub fn sync_tsc(&self) -> Result<(), drtioaux::Error<!>> {
@@ -199,7 +231,6 @@ impl Repeater {
             (csr::DRTIOREP[repno].set_time_write)(1);
             while (csr::DRTIOREP[repno].set_time_read)() == 1 {}
         }
-
         // TSCAck is the only aux packet that is sent spontaneously
         // by the satellite, in response to a TSC set on the RT link.
         let reply = self.recv_aux_timeout(10000)?;
@@ -275,7 +306,7 @@ pub struct Repeater {
 impl Repeater {
     pub fn new(_repno: u8) -> Repeater { Repeater::default() }
 
-    pub fn service(&self, _routing_table: &drtio_routing::RoutingTable, _rank: u8) { }
+    pub fn service(&self, _routing_table: &drtio_routing::RoutingTable, _rank: u8, _destination: u8, _router: &mut Router) { }
 
     pub fn sync_tsc(&self) -> Result<(), drtioaux::Error<!>> { Ok(()) }
 
