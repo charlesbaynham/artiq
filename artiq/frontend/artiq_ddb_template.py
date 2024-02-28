@@ -109,7 +109,7 @@ def process_header(output, description):
         }}
         """).format(
             variant=description["variant"],
-            core_addr=description["core_addr"],
+            core_addr=description.get("hostname") or description["core_addr"],
             ref_period=1/(8*description["rtio_frequency"]),
             cpu_target=get_cpu_target(description)),
         file=output)

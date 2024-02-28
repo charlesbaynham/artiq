@@ -52,8 +52,13 @@
         "core_addr": {
             "type": "string",
             "format": "ipv4",
-            "description": "IPv4 address",
+            "description": "IPv4 address or \"use_dhcp\"",
             "default": "192.168.1.70"
+        },
+        "hostname": {
+            "type": "string",
+            "description": "Hostname to write to device_db instead of core_addr. The bitstream generation is unaffected",
+            "default": ""
         },
         "vendor": {
             "type": "string",
