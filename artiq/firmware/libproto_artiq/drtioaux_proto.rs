@@ -16,7 +16,7 @@ impl<T> From<IoError<T>> for Error<T> {
 
 // maximum size of arbitrary payloads
 // used by satellite -> master analyzer, subkernel exceptions
-pub const SAT_PAYLOAD_MAX_SIZE: usize  = /*max size*/512 - /*CRC*/4 - /*packet ID*/1 - /*last*/1 - /*length*/2;
+pub const SAT_PAYLOAD_MAX_SIZE: usize  = /*max size*/1024 - /*CRC*/4 - /*packet ID*/1 - /*last*/1 - /*length*/2;
 // used by DDMA, subkernel program data (need to provide extra ID and destination)
 pub const MASTER_PAYLOAD_MAX_SIZE: usize = SAT_PAYLOAD_MAX_SIZE - /*source*/1 - /*destination*/1 - /*ID*/4;
 
@@ -77,8 +77,6 @@ pub enum Packet {
 
     RoutingSetPath { destination: u8, hops: [u8; 32] },
     RoutingSetRank { rank: u8 },
-    RoutingRetrievePackets,
-    RoutingNoPackets,
     RoutingAck,
 
     MonitorRequest { destination: u8, channel: u16, probe: u8 },
@@ -170,8 +168,6 @@ impl Packet {
                 rank: reader.read_u8()?
             },
             0x32 => Packet::RoutingAck,
-            0x33 => Packet::RoutingRetrievePackets,
-            0x34 => Packet::RoutingNoPackets,
 
             0x40 => Packet::MonitorRequest {
                 destination: reader.read_u8()?,
@@ -456,10 +452,6 @@ impl Packet {
             },
             Packet::RoutingAck =>
                 writer.write_u8(0x32)?,
-            Packet::RoutingRetrievePackets =>
-                writer.write_u8(0x33)?,
-            Packet::RoutingNoPackets =>
-                writer.write_u8(0x34)?,
 
             Packet::MonitorRequest { destination, channel, probe } => {
                 writer.write_u8(0x40)?;

@@ -1,4 +1,4 @@
-#![feature(never_type, panic_info_message, llvm_asm, default_alloc_error_handler, try_trait)]
+#![feature(never_type, panic_info_message, asm, default_alloc_error_handler)]
 #![no_std]
 
 #[macro_use]
@@ -17,6 +17,10 @@ use core::convert::TryFrom;
 use board_misoc::{csr, ident, clock, uart_logger, i2c, pmp};
 #[cfg(has_si5324)]
 use board_artiq::si5324;
+#[cfg(has_si549)]
+use board_artiq::si549;
+#[cfg(soc_platform = "kasli")]
+use board_misoc::irq;
 use board_artiq::{spi, drtioaux, drtio_routing};
 #[cfg(soc_platform = "efc")]
 use board_artiq::ad9117;
@@ -66,12 +70,7 @@ fn drtiosat_tsc_loaded() -> bool {
     }
 }
 
-fn drtiosat_async_ready() {
-    unsafe {
-        csr::drtiosat::async_messages_ready_write(1);
-    }
-}
-
+#[derive(Clone, Copy)]
 pub enum RtioMaster {
     Drtio,
     Dma,
@@ -86,6 +85,16 @@ pub fn cricon_select(master: RtioMaster) {
     };
     unsafe {
         csr::cri_con::selected_write(val);
+    }
+}
+
+pub fn cricon_read() -> RtioMaster {
+    let val = unsafe { csr::cri_con::selected_read() };
+    match val {
+        0 => RtioMaster::Drtio,
+        1 => RtioMaster::Dma,
+        2 => RtioMaster::Kernel,
+        _ => unreachable!()
     }
 }
 
@@ -239,12 +248,6 @@ fn process_aux_packet(dmamgr: &mut DmaManager, analyzer: &mut Analyzer, kernelmg
         #[cfg(not(has_drtio_routing))]
         drtioaux::Packet::RoutingSetRank { rank: _ } => {
             drtioaux::send(0, &drtioaux::Packet::RoutingAck)
-        }
-
-        drtioaux::Packet::RoutingRetrievePackets => {
-            let packet = router.get_upstream_packet().or(
-                Some(drtioaux::Packet::RoutingNoPackets)).unwrap();
-            drtioaux::send(0, &packet)
         }
 
         drtioaux::Packet::MonitorRequest { destination: _destination, channel, probe } => {
@@ -458,9 +461,9 @@ fn process_aux_packet(dmamgr: &mut DmaManager, analyzer: &mut Analyzer, kernelmg
                 data: data_slice,
             })
         }
-        drtioaux::Packet::SubkernelMessage { source, destination: _destination, id: _id, status, length, data } => {
+        drtioaux::Packet::SubkernelMessage { source, destination: _destination, id, status, length, data } => {
             forward!(_routing_table, _destination, *rank, _repeaters, &packet);
-            kernelmgr.message_handle_incoming(status, length as usize, &data);
+            kernelmgr.message_handle_incoming(status, length as usize, id, &data);
             router.send(drtioaux::Packet::SubkernelMessageAck {
                     destination: source
                 }, _routing_table, *rank, *self_destination)
@@ -596,6 +599,36 @@ const SI5324_SETTINGS: si5324::FrequencySettings
     crystal_as_ckin2: true
 };
 
+#[cfg(all(has_si549, rtio_frequency = "125.0"))]
+const SI549_SETTINGS: si549::FrequencySetting = si549::FrequencySetting {
+    main: si549::DividerConfig {
+        hsdiv: 0x058,
+        lsdiv: 0,
+        fbdiv: 0x04815791F25,
+    },
+    helper: si549::DividerConfig {
+        // 125MHz*32767/32768
+        hsdiv: 0x058,
+        lsdiv: 0,
+        fbdiv: 0x04814E8F442,
+    },
+};
+
+#[cfg(all(has_si549, rtio_frequency = "100.0"))]
+const SI549_SETTINGS: si549::FrequencySetting = si549::FrequencySetting {
+    main: si549::DividerConfig {
+        hsdiv: 0x06C,
+        lsdiv: 0,
+        fbdiv: 0x046C5F49797,
+    },
+    helper: si549::DividerConfig {
+        // 100MHz*32767/32768
+        hsdiv: 0x06C,
+        lsdiv: 0,
+        fbdiv: 0x046C5670BBD,
+    },
+};
+
 #[cfg(not(soc_platform = "efc"))]
 fn sysclk_setup() {
     let switched = unsafe {
@@ -608,6 +641,9 @@ fn sysclk_setup() {
     else {
         #[cfg(has_si5324)]
         si5324::setup(&SI5324_SETTINGS, si5324::Input::Ckin1).expect("cannot initialize Si5324");
+        #[cfg(has_si549)]
+        si549::main_setup(&SI549_SETTINGS).expect("cannot initialize main Si549");
+
         info!("Switching sys clock, rebooting...");
         // delay for clean UART log, wait until UART FIFO is empty
         clock::spin_us(3000);
@@ -631,6 +667,10 @@ pub extern fn main() -> i32 {
         ALLOC.add_range(&mut _fheap, &mut _eheap);
         pmp::init_stack_guard(&_sstack_guard as *const u8 as usize);
     }
+    #[cfg(soc_platform = "kasli")]
+    irq::enable_interrupts();
+    #[cfg(has_wrpll)]
+    irq::enable(csr::WRPLL_INTERRUPT);
 
     clock::init();
     uart_logger::ConsoleLogger::register();
@@ -666,10 +706,27 @@ pub extern fn main() -> i32 {
     #[cfg(not(soc_platform = "efc"))]
     sysclk_setup();
 
+    #[cfg(has_si549)]
+    si549::helper_setup(&SI549_SETTINGS).expect("cannot initialize helper Si549");    
+
     #[cfg(soc_platform = "efc")]
     let mut io_expander;
     #[cfg(soc_platform = "efc")]
     {
+        let p3v3_fmc_en_pin;
+        let vadj_fmc_en_pin;
+
+        #[cfg(hw_rev = "v1.0")]
+        {
+            p3v3_fmc_en_pin = 0;
+            vadj_fmc_en_pin = 1;
+        }
+        #[cfg(hw_rev = "v1.1")]
+        {
+            p3v3_fmc_en_pin = 1;
+            vadj_fmc_en_pin = 7;
+        }
+
         io_expander = board_misoc::io_expander::IoExpander::new().unwrap();
         io_expander.init().expect("I2C I/O expander initialization failed");
 
@@ -677,15 +734,15 @@ pub extern fn main() -> i32 {
         io_expander.set_oe(0, 1 << 5 | 1 << 6 | 1 << 7).unwrap();
         
         // Enable VADJ and P3V3_FMC
-        io_expander.set_oe(1, 1 << 0 | 1 << 1).unwrap();
+        io_expander.set_oe(1, 1 << p3v3_fmc_en_pin | 1 << vadj_fmc_en_pin).unwrap();
 
-        io_expander.set(1, 0, true);
-        io_expander.set(1, 1, true);
+        io_expander.set(1, p3v3_fmc_en_pin, true);
+        io_expander.set(1, vadj_fmc_en_pin, true);
 
         io_expander.service().unwrap();
     }
 
-    #[cfg(not(has_drtio_eem))]
+    #[cfg(not(soc_platform = "efc"))]
     unsafe {
         csr::gt_drtio::txenable_write(0xffffffffu32 as _);
     }
@@ -740,6 +797,9 @@ pub extern fn main() -> i32 {
             si5324::siphaser::select_recovered_clock(true).expect("failed to switch clocks");
             si5324::siphaser::calibrate_skew().expect("failed to calibrate skew");
         }
+
+        #[cfg(has_wrpll)]
+        si549::wrpll::select_recovered_clock(true);
 
         // various managers created here, so when link is dropped, DMA traces,
         // analyzer logs, kernels are cleared and/or stopped for a clean slate
@@ -797,8 +857,8 @@ pub extern fn main() -> i32 {
                 }
             }
 
-            if router.any_upstream_waiting() {
-                drtiosat_async_ready();
+            if let Some(packet) = router.get_upstream_packet() {
+                drtioaux::send(0, &packet).unwrap();
             }
         }
 
@@ -808,11 +868,27 @@ pub extern fn main() -> i32 {
         info!("uplink is down, switching to local oscillator clock");
         #[cfg(has_si5324)]
         si5324::siphaser::select_recovered_clock(false).expect("failed to switch clocks");
+        #[cfg(has_wrpll)]
+        si549::wrpll::select_recovered_clock(false);
     }
 }
 
 #[cfg(soc_platform = "efc")]
 fn enable_error_led() {
+    let p3v3_fmc_en_pin;
+    let vadj_fmc_en_pin;
+
+    #[cfg(hw_rev = "v1.0")]
+    {
+        p3v3_fmc_en_pin = 0;
+        vadj_fmc_en_pin = 1;
+    }
+    #[cfg(hw_rev = "v1.1")]
+    {
+        p3v3_fmc_en_pin = 1;
+        vadj_fmc_en_pin = 7;
+    }
+
     let mut io_expander = board_misoc::io_expander::IoExpander::new().unwrap();
 
     // Keep LEDs enabled
@@ -821,10 +897,10 @@ fn enable_error_led() {
     io_expander.set(0, 7, true);
 
     // Keep VADJ and P3V3_FMC enabled
-    io_expander.set_oe(1, 1 << 0 | 1 << 1).unwrap();
+    io_expander.set_oe(1, 1 << p3v3_fmc_en_pin | 1 << vadj_fmc_en_pin).unwrap();
 
-    io_expander.set(1, 0, true);
-    io_expander.set(1, 1, true);
+    io_expander.set(1, p3v3_fmc_en_pin, true);
+    io_expander.set(1, vadj_fmc_en_pin, true);
 
     io_expander.service().unwrap();
 }
@@ -833,23 +909,33 @@ fn enable_error_led() {
 pub extern fn exception(_regs: *const u32) {
     let pc = mepc::read();
     let cause = mcause::read().cause();
-    
-    fn hexdump(addr: u32) {
-        let addr = (addr - addr % 4) as *const u32;
-        let mut ptr  = addr;
-        println!("@ {:08p}", ptr);
-        for _ in 0..4 {
-            print!("+{:04x}: ", ptr as usize - addr as usize);
-            print!("{:08x} ",   unsafe { *ptr }); ptr = ptr.wrapping_offset(1);
-            print!("{:08x} ",   unsafe { *ptr }); ptr = ptr.wrapping_offset(1);
-            print!("{:08x} ",   unsafe { *ptr }); ptr = ptr.wrapping_offset(1);
-            print!("{:08x}\n",  unsafe { *ptr }); ptr = ptr.wrapping_offset(1);
+    match cause {
+        mcause::Trap::Interrupt(_source) => {
+            #[cfg(has_wrpll)]
+            if irq::is_pending(csr::WRPLL_INTERRUPT) {
+                si549::wrpll::interrupt_handler();
+            }
+        },
+
+        mcause::Trap::Exception(e) => {
+            fn hexdump(addr: u32) {
+                let addr = (addr - addr % 4) as *const u32;
+                let mut ptr  = addr;
+                println!("@ {:08p}", ptr);
+                for _ in 0..4 {
+                    print!("+{:04x}: ", ptr as usize - addr as usize);
+                    print!("{:08x} ",   unsafe { *ptr }); ptr = ptr.wrapping_offset(1);
+                    print!("{:08x} ",   unsafe { *ptr }); ptr = ptr.wrapping_offset(1);
+                    print!("{:08x} ",   unsafe { *ptr }); ptr = ptr.wrapping_offset(1);
+                    print!("{:08x}\n",  unsafe { *ptr }); ptr = ptr.wrapping_offset(1);
+                }
+            }
+
+            hexdump(u32::try_from(pc).unwrap());
+            let mtval = mtval::read();
+            panic!("exception {:?} at PC 0x{:x}, trap value 0x{:x}", e, u32::try_from(pc).unwrap(), mtval)
         }
     }
-
-    hexdump(u32::try_from(pc).unwrap());
-    let mtval = mtval::read();
-    panic!("exception {:?} at PC 0x{:x}, trap value 0x{:x}", cause, u32::try_from(pc).unwrap(), mtval)
 }
 
 #[no_mangle]

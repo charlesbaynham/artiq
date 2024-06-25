@@ -28,10 +28,10 @@ from artiq.master.worker_db import DeviceManager, DatasetManager, DummyDevice
 from artiq.language.environment import (
     is_public_experiment, TraceArgumentManager, ProcessArgumentManager
 )
-from artiq.language.core import set_watchdog_factory, TerminationRequested
+from artiq.language.core import host_only, set_watchdog_factory, TerminationRequested
 from artiq.language.types import TBool
 from artiq.compiler import import_cache
-from artiq.coredevice.core import CompileError, host_only, _render_diagnostic
+from artiq.coredevice.core import CompileError, _render_diagnostic
 from artiq import __version__ as artiq_version
 
 
@@ -73,6 +73,7 @@ class ParentDeviceDB:
 class ParentDatasetDB:
     get = make_parent_action("get_dataset")
     update = make_parent_action("update_dataset")
+    get_metadata = make_parent_action("get_dataset_metadata")
 
 
 class Watchdog:
@@ -186,6 +187,10 @@ class ExamineDatasetMgr:
     def get(key, archive=False):
         return ParentDatasetDB.get(key)
 
+    @staticmethod
+    def get_metadata(key):
+        return ParentDatasetDB.get_metadata(key)
+
 
 def examine(device_mgr, dataset_mgr, file):
     previous_keys = set(sys.modules.keys())
@@ -200,9 +205,7 @@ def examine(device_mgr, dataset_mgr, file):
                     name = name[:-1]
             argument_mgr = TraceArgumentManager()
             scheduler_defaults = {}
-            cls = exp_class(  # noqa: F841 (fill argument_mgr)
-                (device_mgr, dataset_mgr, argument_mgr, scheduler_defaults)
-            )
+            exp_class((device_mgr, dataset_mgr, argument_mgr, scheduler_defaults))
             arginfo = OrderedDict(
                 (k, (proc.describe(), group, tooltip))
                 for k, (proc, group, tooltip) in argument_mgr.requested_args.items()
@@ -215,6 +218,19 @@ def examine(device_mgr, dataset_mgr, file):
         new_keys = set(sys.modules.keys())
         for key in new_keys - previous_keys:
             del sys.modules[key]
+
+
+class ArgumentManager(ProcessArgumentManager):
+    _get_interactive = make_parent_action("get_interactive_arguments")
+
+    def get_interactive(self, interactive_arglist, title):
+        arglist_desc = [(k, p.describe(), g, t)
+                        for k, p, g, t in interactive_arglist]
+        arguments = ArgumentManager._get_interactive(arglist_desc, title)
+        if arguments is not None:
+            for key, processor, _, _ in interactive_arglist:
+                arguments[key] = processor.process(arguments[key])
+        return arguments
 
 
 def setup_diagnostics(experiment_file, repository_path):
@@ -325,11 +341,11 @@ def main():
                     rid, obj["pipeline_name"], expid, obj["priority"])
                 start_local_time = time.localtime(start_time)
                 dirname = os.path.join("results",
-                                   time.strftime("%Y-%m-%d", start_local_time),
-                                   time.strftime("%H", start_local_time))
+                                       time.strftime("%Y-%m-%d", start_local_time),
+                                       time.strftime("%H", start_local_time))
                 os.makedirs(dirname, exist_ok=True)
                 os.chdir(dirname)
-                argument_mgr = ProcessArgumentManager(expid["arguments"])
+                argument_mgr = ArgumentManager(expid["arguments"])
                 exp_inst = exp((device_mgr, dataset_mgr, argument_mgr, {}))
                 argument_mgr.check_unprocessed_arguments()
                 put_completed()

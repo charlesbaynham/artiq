@@ -8,9 +8,14 @@ from enum import Enum
 import struct
 import logging
 import socket
+import math
 
 
 logger = logging.getLogger(__name__)
+
+
+DEFAULT_REF_PERIOD = 1e-9
+ANALYZER_MAGIC = b"ARTIQ Analyzer Proxy\n"
 
 
 class MessageType(Enum):
@@ -113,6 +118,8 @@ def decode_dump(data):
     (sent_bytes, total_byte_count,
      error_occurred, log_channel, dds_onehot_sel) = parts
 
+    logger.debug("analyzer dump has length %d", sent_bytes)
+
     expected_len = sent_bytes + 15
     if expected_len != len(data):
         raise ValueError("analyzer dump has incorrect length "
@@ -124,25 +131,34 @@ def decode_dump(data):
     if total_byte_count > sent_bytes:
         logger.info("analyzer ring buffer has wrapped %d times",
                     total_byte_count//sent_bytes)
+    if sent_bytes == 0:
+        logger.warning("analyzer dump is empty")
 
     position = 15
     messages = []
     for _ in range(sent_bytes//32):
         messages.append(decode_message(data[position:position+32]))
         position += 32
+
+    if len(messages) == 1 and isinstance(messages[0], StoppedMessage):
+        logger.warning("analyzer dump is empty aside from stop message")
+
     return DecodedDump(log_channel, bool(dds_onehot_sel), messages)
 
 
 # simplified from sipyco broadcast Receiver
 class AnalyzerProxyReceiver:
-    def __init__(self, receive_cb):
+    def __init__(self, receive_cb, disconnect_cb=None):
         self.receive_cb = receive_cb
+        self.disconnect_cb = disconnect_cb
 
     async def connect(self, host, port):
         self.reader, self.writer = \
             await keepalive.async_open_connection(host, port)
         try:
-            self.receive_task = asyncio.ensure_future(self._receive_cr())
+            line = await self.reader.readline()
+            assert line == ANALYZER_MAGIC
+            self.receive_task = asyncio.create_task(self._receive_cr())
         except:
             self.writer.close()
             del self.reader
@@ -150,10 +166,11 @@ class AnalyzerProxyReceiver:
             raise
 
     async def close(self):
+        self.disconnect_cb = None
         try:
             self.receive_task.cancel()
             try:
-                await asyncio.wait_for(self.receive_task, None)
+                await self.receive_task
             except asyncio.CancelledError:
                 pass
         finally:
@@ -164,11 +181,14 @@ class AnalyzerProxyReceiver:
     async def _receive_cr(self):
         try:
             while True:
-                endian_byte = await self.reader.readexactly(1)
+                endian_byte = await self.reader.read(1)
                 if endian_byte == b"E":
                     endian = '>'
                 elif endian_byte == b"e":
                     endian = '<'
+                elif endian_byte == b"":
+                    # EOF reached, connection lost
+                    return
                 else:
                     raise ValueError
                 payload_length_word = await self.reader.readexactly(4)
@@ -181,8 +201,11 @@ class AnalyzerProxyReceiver:
                 remaining_data = await self.reader.readexactly(payload_length + 11)
                 data = endian_byte + payload_length_word + remaining_data
                 self.receive_cb(data)
+        except Exception:
+            logger.error("analyzer receiver connection terminating with exception", exc_info=True)
         finally:
-            pass
+            if self.disconnect_cb is not None:
+                self.disconnect_cb()
 
 
 def vcd_codes():
@@ -223,11 +246,12 @@ class VCDManager:
         self.out = fileobj
         self.codes = vcd_codes()
         self.current_time = None
+        self.start_time = 0
 
     def set_timescale_ps(self, timescale):
         self.out.write("$timescale {}ps $end\n".format(round(timescale)))
 
-    def get_channel(self, name, width, ty):
+    def get_channel(self, name, width, ty, precision=0, unit=""):
         code = next(self.codes)
         self.out.write("$var wire {width} {code} {name} $end\n"
                        .format(name=name, code=code, width=width))
@@ -240,9 +264,13 @@ class VCDManager:
         self.out.write("$upscope $end\n")
 
     def set_time(self, time):
+        time -= self.start_time
         if time != self.current_time:
             self.out.write("#{}\n".format(time))
             self.current_time = time
+
+    def set_start_time(self, time):
+        self.start_time = time
 
     def set_end_time(self, time):
         pass
@@ -251,6 +279,8 @@ class VCDManager:
 class WaveformManager:
     def __init__(self):
         self.current_time = 0
+        self.start_time = 0
+        self.end_time = 0
         self.channels = list()
         self.current_scope = ""
         self.trace = {"timescale": 1, "stopped_x": None, "logs": dict(), "data": dict()}
@@ -258,9 +288,9 @@ class WaveformManager:
     def set_timescale_ps(self, timescale):
         self.trace["timescale"] = int(timescale)
 
-    def get_channel(self, name, width, ty):
+    def get_channel(self, name, width, ty, precision=0, unit=""):
         if ty == WaveformType.LOG:
-            self.trace["logs"][self.current_scope + name] = (width, ty)
+            self.trace["logs"][self.current_scope + name] = (ty, width, precision, unit)
         data = self.trace["data"][self.current_scope + name] = list()
         channel = WaveformChannel(data, self.current_time)
         self.channels.append(channel)
@@ -274,11 +304,18 @@ class WaveformManager:
         self.current_scope = old_scope
 
     def set_time(self, time):
+        time -= self.start_time
         for channel in self.channels:
             channel.set_time(time)
 
+    def set_start_time(self, time):
+        self.start_time = time
+        if self.trace["stopped_x"] is not None:
+            self.trace["stopped_x"] = self.end_time - self.start_time
+
     def set_end_time(self, time):
-        self.trace["stopped_x"] = time
+        self.end_time = time
+        self.trace["stopped_x"] = self.end_time - self.start_time
 
 
 class WaveformChannel:
@@ -304,8 +341,8 @@ class ChannelSignatureManager:
         self.current_scope = ""
         self.channels = dict()
 
-    def get_channel(self, name, width, ty):
-        self.channels[self.current_scope + name] = (width, ty)
+    def get_channel(self, name, width, ty, precision=0, unit=""):
+        self.channels[self.current_scope + name] = (ty, width, precision, unit)
         return None
 
     @contextmanager
@@ -347,8 +384,9 @@ class TTLClockGenHandler:
     def __init__(self, manager, name, ref_period):
         self.name = name
         self.ref_period = ref_period
+        precision = max(0, math.ceil(math.log10(2**24 * ref_period) + 6))
         self.channel_frequency = manager.get_channel(
-            "ttl_clkgen/" + name, 64, ty=WaveformType.ANALOG)
+            "ttl_clkgen/" + name, 64, ty=WaveformType.ANALOG, precision=precision, unit="MHz")
 
     def process_message(self, message):
         if isinstance(message, OutputMessage):
@@ -369,11 +407,18 @@ class DDSHandler:
 
     def add_dds_channel(self, name, dds_channel_nr):
         dds_channel = dict()
+        frequency_precision = max(0, math.ceil(math.log10(2**32 / self.sysclk) + 6))
+        phase_precision = max(0, math.ceil(math.log10(2**16)))
         with self.manager.scope("dds", name):
             dds_channel["vcd_frequency"] = \
-                self.manager.get_channel(name + "/frequency", 64, ty=WaveformType.ANALOG)
+                self.manager.get_channel(name + "/frequency", 64, 
+                                         ty=WaveformType.ANALOG, 
+                                         precision=frequency_precision,
+                                         unit="MHz")
             dds_channel["vcd_phase"] = \
-                self.manager.get_channel(name + "/phase", 64, ty=WaveformType.ANALOG)
+                self.manager.get_channel(name + "/phase", 64, 
+                                         ty=WaveformType.ANALOG,
+                                         precision=phase_precision)
         dds_channel["ftw"] = [None, None]
         dds_channel["pow"] = None
         self.dds_channels[dds_channel_nr] = dds_channel
@@ -647,9 +692,11 @@ def create_channel_handlers(manager, devices, ref_period,
 def get_channel_list(devices):
     manager = ChannelSignatureManager()
     create_channel_handlers(manager, devices, 1e-9, 3e9, False)
-    manager.get_channel("timestamp", 64, ty=WaveformType.VECTOR)
-    manager.get_channel("interval", 64, ty=WaveformType.ANALOG)
-    manager.get_channel("rtio_slack", 64, ty=WaveformType.ANALOG)
+    ref_period = get_ref_period(devices)
+    if ref_period is None:
+        ref_period = DEFAULT_REF_PERIOD
+    precision = max(0, math.ceil(math.log10(1 / ref_period) - 6))
+    manager.get_channel("rtio_slack", 64, ty=WaveformType.ANALOG, precision=precision, unit="us")
     return manager.channels
 
 
@@ -671,12 +718,11 @@ def decoded_dump_to_waveform_data(devices, dump, uniform_interval=False):
 def decoded_dump_to_target(manager, devices, dump, uniform_interval):
     ref_period = get_ref_period(devices)
 
-    if ref_period is not None:
-        if not uniform_interval:
-            manager.set_timescale_ps(ref_period*1e12)
-    else:
+    if ref_period is None:
         logger.warning("unable to determine core device ref_period")
-        ref_period = 1e-9  # guess
+        ref_period = DEFAULT_REF_PERIOD
+    if not uniform_interval:
+        manager.set_timescale_ps(ref_period*1e12)
     dds_sysclk = get_dds_sysclk(devices)
     if dds_sysclk is None:
         logger.warning("unable to determine DDS sysclk")
@@ -712,11 +758,12 @@ def decoded_dump_to_target(manager, devices, dump, uniform_interval):
         start_time = get_message_time(m)
         if start_time:
             break
-
-    t0 = 0
+    if not uniform_interval:
+        manager.set_start_time(start_time)
+    t0 = start_time
     for i, message in enumerate(messages):
         if message.channel in channel_handlers:
-            t = get_message_time(message) - start_time
+            t = get_message_time(message)
             if t >= 0:
                 if uniform_interval:
                     interval.set_value_double((t - t0)*ref_period)

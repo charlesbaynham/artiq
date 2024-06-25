@@ -61,8 +61,8 @@ class SyncRTIO(Module):
         self.submodules.outputs = ClockDomainsRenamer("rio")(
             SED(channels, tsc.glbl_fine_ts_width,
                 lane_count=lane_count, fifo_depth=fifo_depth,
-                enable_spread=False, report_buffer_space=True,
-                interface=self.cri))
+                enable_spread=True, fifo_high_watermark=0.75,
+                report_buffer_space=True, interface=self.cri))
         self.comb += self.outputs.coarse_timestamp.eq(tsc.coarse_ts)
         self.sync += self.outputs.minimum_coarse_timestamp.eq(tsc.coarse_ts + 16)
 
@@ -78,7 +78,6 @@ class DRTIOSatellite(Module):
         self.reset = CSRStorage(reset=1)
         self.reset_phy = CSRStorage(reset=1)
         self.tsc_loaded = CSR()
-        self.async_messages_ready = CSR()
         # master interface in the sys domain
         self.cri = cri.Interface()
         self.async_errors = Record(async_errors_layout)
@@ -130,9 +129,6 @@ class DRTIOSatellite(Module):
             link_layer_sync, interface=self.cri)
         self.comb += self.rt_packet.reset.eq(self.cd_rio.rst)
 
-        self.sync += If(self.async_messages_ready.re, self.rt_packet.async_msg_stb.eq(1))
-        self.comb += self.async_messages_ready.w.eq(self.rt_packet.async_msg_ack)
-
         self.comb += [
             tsc.load.eq(self.rt_packet.tsc_load),
             tsc.load_value.eq(self.rt_packet.tsc_load_value)
@@ -147,7 +143,7 @@ class DRTIOSatellite(Module):
             self.rt_packet, tsc, self.async_errors)
 
     def get_csrs(self):
-        return ([self.reset, self.reset_phy, self.tsc_loaded, self.async_messages_ready] +
+        return ([self.reset, self.reset_phy, self.tsc_loaded] +
                 self.link_layer.get_csrs() + self.link_stats.get_csrs() +
                 self.rt_errors.get_csrs())
 

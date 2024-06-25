@@ -47,8 +47,15 @@ class SpecializedFunction:
         return hash((self.instance_type, self.host_function))
 
 
+class SubkernelMessageType:
+    def __init__(self, name, value_type):
+        self.name = name
+        self.value_type = value_type
+        self.send_loc = None
+        self.recv_loc = None
+
 class EmbeddingMap:
-    def __init__(self, subkernels={}):
+    def __init__(self, old_embedding_map=None):
         self.object_current_key = 0
         self.object_forward_map = {}
         self.object_reverse_map = {}
@@ -64,13 +71,22 @@ class EmbeddingMap:
         self.function_map = {}
         self.str_forward_map = {}
         self.str_reverse_map = {}
-        
+
+        # mapping `name` to object ID
+        self.subkernel_message_map = {}
+
         # subkernels: dict of ID: function, just like object_forward_map
         # allow the embedding map to be aware of subkernels from other kernels
-        for key, obj_ref in subkernels.items():
-            self.object_forward_map[key] = obj_ref
-            obj_id = id(obj_ref)
-            self.object_reverse_map[obj_id] = key
+        if not old_embedding_map is None:
+            for key, obj_ref in old_embedding_map.subkernels().items():
+                self.object_forward_map[key] = obj_ref
+                obj_id = id(obj_ref)
+                self.object_reverse_map[obj_id] = key
+            for msg_id, msg_type in old_embedding_map.subkernel_messages().items():
+                self.object_forward_map[msg_id] = msg_type
+                obj_id = id(msg_type)
+                self.subkernel_message_map[msg_type.name] = msg_id
+                self.object_reverse_map[obj_id] = msg_id
 
         self.preallocate_runtime_exception_names(["RuntimeError",
                                                   "RTIOUnderflow",
@@ -174,7 +190,7 @@ class EmbeddingMap:
         self.object_current_key += 1
         while self.object_forward_map.get(self.object_current_key):
             # make sure there's no collisions with previously inserted subkernels
-            # their identifiers must be consistent between kernels/subkernels
+            # their identifiers must be consistent across all kernels/subkernels
             self.object_current_key += 1
         
         self.object_forward_map[self.object_current_key] = obj_ref
@@ -189,7 +205,7 @@ class EmbeddingMap:
             obj_ref = self.object_forward_map[obj_id]
             if isinstance(obj_ref, (pytypes.FunctionType, pytypes.MethodType,
                                     pytypes.BuiltinFunctionType, pytypes.ModuleType,
-                                    SpecializedFunction)):
+                                    SpecializedFunction, SubkernelMessageType)):
                 continue
             elif isinstance(obj_ref, type):
                 _, obj_typ = self.type_map[obj_ref]
@@ -204,6 +220,35 @@ class EmbeddingMap:
                 if v.artiq_embedded.destination is not None:
                     subkernels[k] = v
         return subkernels
+
+    def store_subkernel_message(self, name, value_type, function_type, function_loc):
+        if name in self.subkernel_message_map:
+            msg_id = self.subkernel_message_map[name]
+        else:
+            msg_id = self.store_object(SubkernelMessageType(name, value_type))
+            self.subkernel_message_map[name] = msg_id
+        subkernel_msg = self.retrieve_object(msg_id)
+        if function_type == "send":
+            subkernel_msg.send_loc = function_loc
+        elif function_type == "recv":
+            subkernel_msg.recv_loc = function_loc
+        else:
+            assert False
+        return msg_id, subkernel_msg
+
+    def subkernel_messages(self):
+        messages = {}
+        for msg_id in self.subkernel_message_map.values():
+            messages[msg_id] = self.retrieve_object(msg_id)
+        return messages
+
+    def subkernel_messages_unpaired(self):
+        unpaired = []
+        for msg_id in self.subkernel_message_map.values():
+            msg_obj = self.retrieve_object(msg_id)
+            if msg_obj.send_loc is None or msg_obj.recv_loc is None:
+                unpaired.append(msg_obj)
+        return unpaired
 
     def has_rpc(self):
         return any(filter(
@@ -702,9 +747,9 @@ class StitchingInferencer(Inferencer):
                 if elt.__class__ == float:
                     state |= IS_FLOAT
                 elif elt.__class__ == int:
-                    if -2**31 < elt < 2**31-1:
+                    if -2**31 <= elt <= 2**31-1:
                         state |= IS_INT32
-                    elif -2**63 < elt < 2**63-1:
+                    elif -2**63 <= elt <= 2**63-1:
                         state |= IS_INT64
                     else:
                         state = -1
@@ -802,7 +847,7 @@ class TypedtreeHasher(algorithm.Visitor):
         return hash(tuple(freeze(getattr(node, field_name)) for field_name in fields))
 
 class Stitcher:
-    def __init__(self, core, dmgr, engine=None, print_as_rpc=True, destination=0, subkernel_arg_types=[], subkernels={}):
+    def __init__(self, core, dmgr, engine=None, print_as_rpc=True, destination=0, subkernel_arg_types=[], old_embedding_map=None):
         self.core = core
         self.dmgr = dmgr
         if engine is None:
@@ -824,7 +869,7 @@ class Stitcher:
 
         self.functions = {}
 
-        self.embedding_map = EmbeddingMap(subkernels)
+        self.embedding_map = EmbeddingMap(old_embedding_map)
         self.value_map = defaultdict(lambda: [])
         self.definitely_changed = False
 

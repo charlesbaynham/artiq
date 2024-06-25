@@ -36,12 +36,16 @@ use smoltcp::wire::HardwareAddress;
 use board_misoc::{csr, ident, clock, spiflash, config, net_settings, pmp, boot};
 #[cfg(has_ethmac)]
 use board_misoc::ethmac;
+#[cfg(soc_platform = "kasli")]
+use board_misoc::irq;
 use board_misoc::net_settings::{Ipv4AddrConfig};
 #[cfg(has_drtio)]
 use board_artiq::drtioaux;
 use board_artiq::drtio_routing;
 use board_artiq::{mailbox, rpc_queue};
 use proto_artiq::{mgmt_proto, moninj_proto, rpc_proto, session_proto, kernel_proto};
+#[cfg(has_wrpll)]
+use board_artiq::si549;
 #[cfg(has_drtio_eem)]
 use board_artiq::drtio_eem;
 #[cfg(has_rtio_analyzer)]
@@ -214,15 +218,19 @@ fn startup() {
     #[cfg(any(has_rtio_moninj, has_drtio))]
     {
         let aux_mutex = aux_mutex.clone();
+        let ddma_mutex = ddma_mutex.clone();
+        let subkernel_mutex = subkernel_mutex.clone();
         let drtio_routing_table = drtio_routing_table.clone();
-        io.spawn(4096, move |io| { moninj::thread(io, &aux_mutex, &drtio_routing_table) });
+        io.spawn(4096, move |io| { moninj::thread(io, &aux_mutex, &ddma_mutex, &subkernel_mutex, &drtio_routing_table) });
     }
     #[cfg(has_rtio_analyzer)]
     {
         let aux_mutex = aux_mutex.clone();
+        let ddma_mutex = ddma_mutex.clone();
+        let subkernel_mutex = subkernel_mutex.clone();
         let drtio_routing_table = drtio_routing_table.clone();
         let up_destinations = up_destinations.clone();
-        io.spawn(8192, move |io| { analyzer::thread(io, &aux_mutex, &drtio_routing_table, &up_destinations) });
+        io.spawn(8192, move |io| { analyzer::thread(io, &aux_mutex, &ddma_mutex, &subkernel_mutex, &drtio_routing_table, &up_destinations) });
     }
 
     #[cfg(has_grabber)]
@@ -261,6 +269,11 @@ pub extern fn main() -> i32 {
 
         pmp::init_stack_guard(&_sstack_guard as *const u8 as usize);
 
+        #[cfg(soc_platform = "kasli")]
+        irq::enable_interrupts();
+        #[cfg(has_wrpll)]
+        irq::enable(csr::WRPLL_INTERRUPT);
+
         logger_artiq::BufferLogger::new(&mut LOG_BUFFER[..]).register(||
             boot::start_user(startup as usize)
         );
@@ -295,8 +308,11 @@ pub extern fn exception(regs: *const TrapFrame) {
     let pc = mepc::read();
     let cause = mcause::read().cause();
     match cause {
-        mcause::Trap::Interrupt(source) => {
-            info!("Called interrupt with {:?}", source);
+        mcause::Trap::Interrupt(_source) => {
+            #[cfg(has_wrpll)]
+            if irq::is_pending(csr::WRPLL_INTERRUPT) {
+                si549::wrpll::interrupt_handler();
+            }
         },
 
         mcause::Trap::Exception(mcause::Exception::UserEnvCall) => {
