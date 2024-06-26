@@ -32,6 +32,10 @@ def dma_retrieve(name: TStr) -> TTuple([TInt64, TInt32, TBool]):
 def dma_playback(timestamp: TInt64, ptr: TInt32, enable_ddma: TBool) -> TNone:
     raise NotImplementedError("syscall not simulated")
 
+@syscall
+def dma_is_recording() -> TBool:
+    raise NotImplementedError("syscall not simulated")
+
 
 class DMARecordContextManager:
     """Context manager returned by :meth:`CoreDMA.record()`.

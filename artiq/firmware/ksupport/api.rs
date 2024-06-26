@@ -155,6 +155,7 @@ static mut API: &'static [(&'static str, *const ())] = &[
     api!(dma_record_stop = ::dma_record_stop),
     api!(dma_erase = ::dma_erase),
     api!(dma_retrieve = ::dma_retrieve),
+    api!(dma_is_recording = ::dma_is_recording),
     api!(dma_playback = ::dma_playback),
 
     api!(subkernel_load_run = ::subkernel_load_run),

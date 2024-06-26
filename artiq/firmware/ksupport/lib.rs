@@ -262,6 +262,16 @@ extern "C-unwind" fn dma_record_start(name: &CSlice<u8>) {
     }
 }
 
+
+#[unwind(allowed)]
+extern fn dma_is_recording() -> bool {
+    unsafe {
+        return DMA_RECORDER.active;
+    }
+}
+
+
+#[unwind(allowed)]
 extern "C-unwind" fn dma_record_stop(duration: i64, enable_ddma: bool) {
     unsafe {
         dma_record_flush();
