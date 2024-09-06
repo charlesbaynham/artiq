@@ -698,7 +698,7 @@ class GenericStandalone(StandaloneBase):
         self.config["RTIO_LOG_CHANNEL"] = len(self.rtio_channels)
         self.rtio_channels.append(rtio.LogChannel())
 
-        self.add_rtio(self.rtio_channels, sed_lanes=description["sed_lanes"], sed_lanes=description["enable_spread"])
+        self.add_rtio(self.rtio_channels, sed_lanes=description["sed_lanes"], enable_spread=description["enable_spread"])
 
         if has_grabber:
             self.config["HAS_GRABBER"] = None
