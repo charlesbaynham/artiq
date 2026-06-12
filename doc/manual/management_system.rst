@@ -48,7 +48,18 @@ You will want Git to notify the master every time the repository is pushed to (e
 
 By default, the dashboard runs experiments from the repository, whereas the command-line client (``artiq_client submit``) runs experiments from the raw filesystem (which is useful for iterating rapidly without creating many disorganized commits). In order to run from the raw filesystem when using the dashboard, right-click in the Explorer window and select the option "Open file outside repository"; in order to run from the repository when using the command-line client, simply pass the ``-R`` flag. 
 
-.. _experiment-scheduling: 
+.. _mgmt-working-tree-revision:
+
+Running the live working tree
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Because submissions normally run from a checked-out commit, uncommitted edits in a non-bare repository do not take effect until they are committed and the repository is rescanned. To run experiments directly from the working tree instead, including uncommitted changes, the special revision ``WORKING`` may be requested in place of a commit ID or reference. The master then submits from the working tree on its local filesystem rather than from a temporary checkout, so edits take effect immediately. This reproduces the behavior of the raw filesystem backend on demand, without restarting the master with the Git backend disabled.
+
+In the dashboard, tick the 'Live' checkbox next to the 'Rev / ref' field (shown only when the Git backend is in use), or type ``WORKING`` into the field directly. With the command-line client, use ``artiq_client submit --repository --revision WORKING``.
+
+Note that this is only possible with a non-bare repository, since a bare repository has no working tree on the master's filesystem. Experiments run this way are not reproducible: the recorded revision is ``WORKING`` rather than a commit ID, and modifying a file while an experiment that imports it is running may cause a single run to mix code from different versions.
+
+.. _experiment-scheduling:
 
 Experiment scheduling
 ---------------------

@@ -9,7 +9,7 @@ from sipyco.sync_struct import Notifier, update_from_dict
 
 from artiq.master.worker import (Worker, WorkerInternalException,
                                  log_worker_exception)
-from artiq.tools import get_windows_drives, exc_to_warning
+from artiq.tools import get_windows_drives, exc_to_warning, WORKING_TREE_REV
 
 
 logger = logging.getLogger(__name__)
@@ -197,6 +197,7 @@ class GitBackend:
         # lazy import - make dependency optional
         import pygit2
 
+        self.root = os.path.abspath(root)
         self.git = pygit2.Repository(root)
         self.checkouts = dict()
 
@@ -215,6 +216,12 @@ class GitBackend:
         return commit.hex
 
     def request_rev(self, rev):
+        if rev == WORKING_TREE_REV:
+            # Run straight from the live working tree; no checkout to manage.
+            if self.git.is_bare:
+                raise ValueError("the \"{}\" revision requires a non-bare "
+                                 "repository".format(WORKING_TREE_REV))
+            return self.root, "(uncommitted working tree)", WORKING_TREE_REV
         rev = self._get_pinned_rev(rev)
         if rev in self.checkouts:
             co = self.checkouts[rev]
@@ -225,6 +232,9 @@ class GitBackend:
         return co.path, co.message, rev
 
     def release_rev(self, rev):
+        if rev == WORKING_TREE_REV:
+            # Nothing was checked out for the working tree.
+            return
         co = self.checkouts[rev]
         co.ref_count -= 1
         if not co.ref_count:

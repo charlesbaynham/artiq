@@ -24,10 +24,20 @@ __all__ = ["parse_arguments",
            "short_format", "file_import",
            "get_experiment",
            "exc_to_warning", "asyncio_wait_or_cancel",
-           "get_windows_drives", "get_user_config_dir"]
+           "get_windows_drives", "get_user_config_dir",
+           "WORKING_TREE_REV"]
 
 
 logger = logging.getLogger(__name__)
+
+
+# Sentinel "revision" that runs an experiment directly from the repository
+# working tree instead of a checked-out commit. This reproduces the behaviour
+# of the filesystem backend ("dev mode") on demand, so uncommitted edits to the
+# repository take effect immediately without restarting the master with the Git
+# backend disabled. Such runs are not reproducible: the recorded repo_rev is
+# this sentinel rather than a commit hash.
+WORKING_TREE_REV = "WORKING"
 
 
 def parse_arguments(arguments):

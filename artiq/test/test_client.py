@@ -144,6 +144,43 @@ class TestClient(unittest.TestCase):
         self.assertEqual(self.master.wait(), 0)
         self.master.stdout.close()
 
+    def test_submit_working_tree_revision(self):
+        # The "WORKING" pseudo-revision runs the live working tree, so
+        # uncommitted edits to repository modules take effect immediately
+        # without committing. Imports must resolve to the working tree even
+        # though it differs from every committed revision.
+        os.mkdir(os.path.join(self.tmp_dir.name, "subdir"))
+        exp_rel_path = os.path.join("subdir", "importing_experiment.py")
+        with open(os.path.join(self.tmp_dir.name, exp_rel_path), "w") as f:
+            f.write(IMPORTING_EXPERIMENT_CONTENT)
+
+        def write_libs(which):
+            for lib_name in ("lib.py", "lib2.py"):
+                with open(os.path.join(self.tmp_dir.name, lib_name), "w") as f:
+                    f.write('WHICH = "{}"\n'.format(which))
+
+        repo = init_repository(self.tmp_dir.name)
+        write_libs("committed")
+        self.commit_all(repo, "committed")
+        # Edit the working tree without committing.
+        write_libs("dirty")
+
+        # Start the master from a neutral directory so that only the WORKING
+        # revision (not the process working directory) can make the dirty
+        # modules importable.
+        self.start_master("-r", self.tmp_dir.name, "-g",
+                           cwd=self.tmp_empty_dir.name)
+        self.run_client("submit", exp_rel_path, "-R", "-r", "WORKING")
+        while True:
+            line = self.master.stdout.readline()
+            self.assertNotIn("ERROR", line)
+            if "imported:" in line:
+                self.assertIn("imported: dirty dirty", line)
+                break
+        self.run_client("terminate")
+        self.assertEqual(self.master.wait(), 0)
+        self.master.stdout.close()
+
     def tearDown(self):
         if self.master is not None and self.master.poll() is None:
             self.master.kill()
