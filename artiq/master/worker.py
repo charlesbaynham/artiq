@@ -300,7 +300,7 @@ class Worker:
     async def analyze(self):
         await self._worker_action({"action": "analyze"})
 
-    async def examine(self, rid, file, timeout=20.0):
+    async def examine(self, rid, file, repository_path=None, timeout=20.0):
         self.rid = rid
         self.filename = os.path.basename(file)
 
@@ -316,7 +316,8 @@ class Worker:
                 "scheduler_defaults": scheduler_defaults
             }
         self.register_experiment = register
-        await self._worker_action({"action": "examine", "file": file},
+        await self._worker_action({"action": "examine", "file": file,
+                                   "repository_path": repository_path},
                                   timeout)
         del self.register_experiment
         return r
