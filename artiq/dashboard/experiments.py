@@ -10,7 +10,8 @@ import h5py
 from artiq.gui.entries import procdesc_to_entry, EntryTreeWidget
 from artiq.gui.fuzzy_select import FuzzySelectWidget
 from artiq.gui.tools import (LayoutWidget, log_level_to_name, get_open_file_name)
-from artiq.tools import parse_devarg_override, unparse_devarg_override
+from artiq.tools import (parse_devarg_override, unparse_devarg_override,
+                         WORKING_TREE_REV)
 from artiq import compat
 
 
@@ -239,12 +240,10 @@ class _ExperimentDock(QtWidgets.QMdiSubWindow):
             repo_rev_label = QtWidgets.QLabel("Rev / ref:")
             repo_rev_label.setToolTip("Experiment repository revision "
                                       "(commit ID) or reference (branch "
-                                      "or tag) to use")
+                                      "or tag) to use, or \"WORKING\" to run "
+                                      "the live working tree including "
+                                      "uncommitted changes")
             self.layout.addWidget(repo_rev_label, 3, 2)
-            self.layout.addWidget(repo_rev, 3, 3)
-
-            if options["repo_rev"] is not None:
-                repo_rev.setText(options["repo_rev"])
 
             def update_repo_rev(text):
                 if text:
@@ -253,6 +252,40 @@ class _ExperimentDock(QtWidgets.QMdiSubWindow):
                     options["repo_rev"] = None
             repo_rev.textChanged.connect(update_repo_rev)
             self.repo_rev = repo_rev
+
+            if manager.is_git_backend():
+                # Offer a one-click toggle for running the live working tree.
+                # Only meaningful with the Git backend; the filesystem backend
+                # already always runs the working tree.
+                rev_widget = QtWidgets.QWidget()
+                rev_layout = QtWidgets.QHBoxLayout(rev_widget)
+                rev_layout.setContentsMargins(0, 0, 0, 0)
+                rev_layout.addWidget(repo_rev)
+                live = QtWidgets.QCheckBox("Live")
+                live.setToolTip("Run the live working tree, including "
+                                "uncommitted changes (sets revision to "
+                                "\"{}\")".format(WORKING_TREE_REV))
+                rev_layout.addWidget(live)
+                self.layout.addWidget(rev_widget, 3, 3)
+
+                def update_live(checked):
+                    if checked:
+                        repo_rev.setText(WORKING_TREE_REV)
+                        repo_rev.setEnabled(False)
+                    else:
+                        repo_rev.setEnabled(True)
+                        if repo_rev.text() == WORKING_TREE_REV:
+                            repo_rev.clear()
+                live.toggled.connect(update_live)
+                self.live = live
+
+                if options["repo_rev"] is not None:
+                    repo_rev.setText(options["repo_rev"])
+                live.setChecked(options["repo_rev"] == WORKING_TREE_REV)
+            else:
+                self.layout.addWidget(repo_rev, 3, 3)
+                if options["repo_rev"] is not None:
+                    repo_rev.setText(options["repo_rev"])
 
         submit = QtWidgets.QPushButton("Submit")
         submit.setIcon(QtWidgets.QApplication.style().standardIcon(
@@ -431,7 +464,13 @@ class _ExperimentDock(QtWidgets.QMdiSubWindow):
             if "repo_rev" in expid and \
                expid["repo_rev"] != "N/A" and \
                hasattr(self, "repo_rev"):
-                self.repo_rev.setText(expid["repo_rev"])
+                if hasattr(self, "live"):
+                    is_working = expid["repo_rev"] == WORKING_TREE_REV
+                    self.live.setChecked(is_working)
+                    if not is_working:
+                        self.repo_rev.setText(expid["repo_rev"])
+                else:
+                    self.repo_rev.setText(expid["repo_rev"])
         except:
             logger.error("Could not set submission options from HDF5 expid",
                          exc_info=True)
@@ -537,7 +576,7 @@ class ExperimentManager:
     argument_ui_classes = dict()
 
     def __init__(self, main_window, dataset_sub,
-                 explist_sub, schedule_sub,
+                 explist_sub, explist_status_sub, schedule_sub,
                  schedule_ctl, experiment_db_ctl):
         self.main_window = main_window
         self.schedule_ctl = schedule_ctl
@@ -554,6 +593,8 @@ class ExperimentManager:
         dataset_sub.add_setmodel_callback(self.set_dataset_model)
         self.explist = dict()
         explist_sub.add_setmodel_callback(self.set_explist_model)
+        self.explist_status = None
+        explist_status_sub.add_setmodel_callback(self.set_explist_status_model)
         self.schedule = dict()
         schedule_sub.add_setmodel_callback(self.set_schedule_model)
 
@@ -571,6 +612,17 @@ class ExperimentManager:
 
     def set_explist_model(self, model):
         self.explist = model.backing_store
+
+    def set_explist_status_model(self, model):
+        self.explist_status = model
+
+    def is_git_backend(self):
+        # The filesystem backend reports a head revision of "N/A"; the Git
+        # backend reports a commit hash. Used to decide whether running the
+        # live working tree ("WORKING") is a meaningful option.
+        if self.explist_status is None:
+            return False
+        return self.explist_status.status.get("cur_rev") not in (None, "N/A")
 
     def set_schedule_model(self, model):
         self.schedule = model.backing_store

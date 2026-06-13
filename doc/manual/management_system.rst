@@ -76,6 +76,17 @@ Behind the scenes, when scanning the repository, the master fetches the last (at
 
 The use of the Git backend is triggered when the master is started with the ``-g`` flag. Otherwise the raw filesystem is read and Git-based features will not be available.
 
+.. _mgmt-working-tree-revision:
+
+Running the live working tree
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Because submissions normally run from a checked-out commit, uncommitted edits in a non-bare repository do not take effect until they are committed and the repository is rescanned. To run experiments directly from the working tree instead, including uncommitted changes, the special revision ``WORKING`` may be requested in place of a commit ID or reference. The master then submits from the working tree on its local filesystem rather than from a temporary checkout, so edits take effect immediately. This reproduces the behavior of the raw filesystem backend on demand, without restarting the master with the Git backend disabled.
+
+In the dashboard, tick the 'Live' checkbox next to the 'Rev / ref' field (shown only when the Git backend is in use), or type ``WORKING`` into the field directly. With the command-line client, use ``artiq_client submit --repository --revision WORKING``.
+
+Note that this is only possible with a non-bare repository, since a bare repository has no working tree on the master's filesystem. Experiments run this way are not reproducible: the recorded revision is ``WORKING`` rather than a commit ID, and modifying a file while an experiment that imports it is running may cause a single run to mix code from different versions.
+
 .. _submission-details:
 
 Submission from the raw filesystem

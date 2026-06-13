@@ -9,7 +9,7 @@ from sipyco.sync_struct import Notifier, update_from_dict
 
 from artiq.master.worker import (Worker, WorkerInternalException,
                                  log_worker_exception)
-from artiq.tools import get_windows_drives, exc_to_warning
+from artiq.tools import get_windows_drives, exc_to_warning, WORKING_TREE_REV
 
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ class _RepoScanner:
         logger.debug("processing file %s %s", root, filename)
         try:
             description = await self.worker.examine(
-                "scan", os.path.join(root, filename))
+                "scan", os.path.join(root, filename), repository_path=root)
         except:
             log_worker_exception()
             raise
@@ -129,14 +129,17 @@ class ExperimentDB:
         self.scan_task = self.loop.create_task(exc_to_warning(self.scan_repository(new_cur_rev)))
 
     async def examine(self, filename, use_repository=True, revision=None):
+        repository_path = None
         if use_repository:
             if revision is None:
                 revision = self.cur_rev
             wd, _, revision = self.repo_backend.request_rev(revision)
             filename = os.path.join(wd, filename)
+            repository_path = wd
         worker = Worker(self.worker_handlers)
         try:
-            description = await worker.examine("examine", filename)
+            description = await worker.examine(
+                "examine", filename, repository_path=repository_path)
         finally:
             await worker.close()
         if use_repository:
@@ -215,6 +218,12 @@ class GitBackend:
         return commit_id
 
     def request_rev(self, rev):
+        if rev == WORKING_TREE_REV:
+            # Run straight from the live working tree; no checkout to manage.
+            if self.git.is_bare:
+                raise ValueError("the \"{}\" revision requires a non-bare "
+                                 "repository".format(WORKING_TREE_REV))
+            return self.root, "(uncommitted working tree)", WORKING_TREE_REV
         rev = self._get_pinned_rev(rev)
         if rev in self.checkouts:
             co = self.checkouts[rev]
@@ -225,6 +234,9 @@ class GitBackend:
         return co.path, co.message, rev
 
     def release_rev(self, rev):
+        if rev == WORKING_TREE_REV:
+            # Nothing was checked out for the working tree.
+            return
         co = self.checkouts[rev]
         co.ref_count -= 1
         if not co.ref_count:

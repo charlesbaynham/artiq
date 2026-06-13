@@ -212,8 +212,13 @@ class ExamineDatasetMgr:
         return ParentDatasetDB.get_metadata(key)
 
 
-def examine(device_mgr, dataset_mgr, file):
+def examine(device_mgr, dataset_mgr, file, repository_path=None):
     previous_keys = set(sys.modules.keys())
+    if repository_path is not None:
+        # Allow examined files to import modules from the repository
+        # checkout they belong to (and not from other copies reachable on
+        # sys.path, e.g. the repository working tree).
+        sys.path.insert(0, repository_path)
     try:
         module = tools.file_import(file)
         for class_name, exp_class in inspect.getmembers(module, is_public_experiment):
@@ -235,6 +240,8 @@ def examine(device_mgr, dataset_mgr, file):
                 argument_ui = exp_class.argument_ui
             register_experiment(class_name, name, arginfo, argument_ui, scheduler_defaults)
     finally:
+        if repository_path is not None:
+            sys.path.remove(repository_path)
         new_keys = set(sys.modules.keys())
         for key in new_keys - previous_keys:
             del sys.modules[key]
@@ -349,6 +356,13 @@ def main():
                         # Using repository
                         experiment_file = os.path.join(obj["wd"], expid["file"])
                         repository_path = obj["wd"]
+                        # Make the repository checkout importable for the
+                        # lifetime of the experiment, so that modules
+                        # imported by the experiment resolve to the
+                        # requested revision rather than to other copies
+                        # reachable on sys.path (e.g. the repository working
+                        # tree, when the master is run from within it).
+                        sys.path.insert(0, repository_path)
                     else:
                         experiment_file = expid["file"]
                         repository_path = None
@@ -401,7 +415,8 @@ def main():
 
                 put_completed()
             elif action == "examine":
-                examine(ExamineDeviceMgr, ExamineDatasetMgr, obj["file"])
+                examine(ExamineDeviceMgr, ExamineDatasetMgr, obj["file"],
+                        obj.get("repository_path"))
                 put_completed()
             elif action == "terminate":
                 break
